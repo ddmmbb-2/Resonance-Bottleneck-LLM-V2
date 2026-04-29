@@ -104,7 +104,7 @@ This project explores an alternative:
 * [x] Training pipeline ready
 * [ ] Large-scale training
 * [ ] Benchmark evaluation
-
+![png](Figure_1.png)
 ---
 
 ## 📌 Future Work | 未來方向
