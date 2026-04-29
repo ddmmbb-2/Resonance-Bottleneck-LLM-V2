@@ -1,118 +1,81 @@
+---
 
+# 🚀 Resonance-Bottleneck-LLM (V19-Mini)
 
-# 🚀 Resonance-Bottleneck-LLM (V18)
-
-> *Not all attention is softmax. Some echoes.*
+> *Beyond attention: Latent resonance with recursive thinking.*
 
 ---
 
 ## 🧠 Overview | 概述
 
-**Resonance-Bottleneck-LLM** is a novel Transformer architecture that introduces **latent-space compression** and a **resonance-based attention mechanism**.
-
-**Resonance-Bottleneck-LLM** 是一種新型 Transformer 架構，結合 **潛空間壓縮（latent bottleneck）** 與 **共振式注意力（resonance-based attention）**，探索不同於傳統 softmax attention 的建模方式。
+**Resonance-Bottleneck-LLM (V19)** 演進至 **"Mini-Reasoning"** 階段。這是一個實驗性的 Transformer 架構，除了延續 **潛空間壓縮（Latent Bottleneck）** 與 **共振式注意力（Resonance Attention）** 外，V19 引入了 **Selective Recurrent Reasoning (局部遞迴推理)** 機制，允許模型在特定層級進行「多次思考（Think Steps）」，以深化語意理解。
 
 ---
 
 ## ✨ Key Features | 核心特色
 
-### 🔹 Latent Bottleneck Compression
+### 🔹 Selective Recurrent Reasoning (New!)
+In V19, specific layers (Block 2 & 4) are upgraded to **Reasoning Cores**. These layers use a recurrent loop (`think_steps=2`) to iteratively refine latent representations before passing them to the next block.
+在 V19 中，特定的層級（第 2 與第 4 層）被升級為 **推理核心（Reasoning Core）**。透過遞迴循環機制，模型能在這些層級進行多次迭代思考，強化複雜邏輯的處理能力。
 
-Compresses representations into a lower-dimensional latent space before attention expansion.
-在進入注意力計算前先進行潛空間壓縮，降低計算成本並提升表示效率。
-![png](Gemini_Generated_Image_tizztbtizztbtizz.png)
----
+### 🔹 Latent Bottleneck & Resonance Attention
+Compresses information into a 128-dim latent space, utilizing phase-aware resonance gating (amplitude, phase, and interference) instead of standard softmax.
+將資訊壓縮至 128 維的潛空間，並利用相位干涉與振幅門控進行共振式注意力計算，完全捨棄傳統的 softmax。
 
-### 🔹 Resonance-Based Attention
-
-Introduces **phase interaction**, **amplitude gating**, and **interference dynamics**.
-透過「相位（phase）」、「振幅（amplitude）」與「干涉（interference）」機制，建立全新的注意力模式。
-
----
-
-### 🔹 Decaying Memory States
-
-Maintains KV states with exponential decay for stable long-context modeling.
-透過指數衰減（decay）的記憶機制，提升長序列建模的穩定性與效率。
+### 🔹 Triple-Hybrid Architecture
+A balanced mix of **Attention**, **Causal Convolution**, and **Reasoning Cores**.
+結合 **注意力層**、**因果卷積層** 與 **推理核心** 的三重複合架構，兼顧全域關聯、局部結構與深度邏輯。
 
 ---
 
-### 🔹 Hybrid Architecture (Attention + Conv)
+## 🏗️ Architecture | 模型架構 (V19-Mini)
 
-Alternates between attention blocks and causal convolution layers.
-交替使用注意力層與因果卷積（CausalConv），同時捕捉全域語意與局部結構。
+V19-Mini 採用 6 層交替結構，配置如下：
 
----
+| Layer | Type | Description |
+| :--- | :--- | :--- |
+| **Layer 0** | Attention Block | V18.1 Resonance Attention |
+| **Layer 1** | Conv Block | Causal 1D Convolution |
+| **Layer 2** | **Reasoning Core** ⭐ | **Recurrent Thinking (2 steps)** |
+| **Layer 3** | Conv Block | Causal 1D Convolution |
+| **Layer 4** | **Reasoning Core** ⭐ | **Recurrent Thinking (2 steps)** |
+| **Layer 5** | Conv Block | Causal 1D Convolution |
 
-### 🔹 Softmax-Free Attention Path
+👉 *Detailed diagram: See the generated `V19-Mini_Architecture.png`*
 
-Avoids traditional softmax normalization in favor of normalized KV accumulation.
-不依賴傳統 softmax，而採用 KV 累積與正規化機制進行注意力計算。
-
----
-
-## 🏗️ Architecture | 模型架構
-
-* Latent Compression → QKV Expansion
-* Phase-aware Resonance Gating
-* KV Memory Accumulation with Decay
-* Attention Output Normalization
-* Hybrid Conv + Transformer Blocks
-
-👉 詳細架構請參考上方圖示（Figure）。
+![png](Gemini_Generated_Image_cjbpm7cjbpm7cjbp.png)
 
 ---
 
-## ⚙️ Training Setup | 訓練設定
+## ⚙️ Training Setup | 訓練設定 (V19-Mini)
 
-* Model size: 768 dim / 24 layers
-* Heads: 12
-* Latent dim: 512
-* Context length: up to 2048 (RoPE supported)
-* Optimizer: AdamW
-* Mixed precision (bfloat16)
+* **Model Size**: 256 dim / 6 layers
+* **Attention Heads**: 4
+* **Latent Dim**: 128
+* **Thinking Steps**: 2 (at Layer 2 & 4)
+* **Context Length**: 512 (RoPE supported)
+* **Vocab Size**: 16,384
+* **Optimization**: AdamW + Warmup Scheduler + Autocast (BFloat16)
 
 ---
 
 ## 📊 Design Motivation | 設計動機
 
-Traditional Transformers rely heavily on softmax attention, which can suffer from:
+The V19 update explores **"Thinking in Latent Space"**:
 
-* Inefficient long-context scaling
-* Attention diffusion
-* Lack of explicit memory dynamics
+> **Standard LLMs process tokens linearly. Resonance V19 processes tokens through resonance, then pauses to "think" via recurrent latent updates.**
 
-傳統 Transformer 的 softmax attention 在長序列下可能出現：
-
-* 計算效率下降
-* 注意力擴散（attention dilution）
-* 缺乏明確記憶機制
-
-This project explores an alternative:
-
-> **Attention as resonance + memory evolution**
-
-本模型嘗試將注意力重新詮釋為：
-
-> **「共振 + 記憶演化」的動態系統**
+V19 的設計核心在於「潛空間中的思考」：傳統 LLM 是線性地處理 Token，而 Resonance V19 則是透過共振捕捉關聯後，在特定的推理層停留並進行遞迴運算，實現更深層的特徵演化。
 
 ---
 
 ## 🚧 Status | 開發狀態
 
-* [x] Core architecture implemented
-* [x] Training pipeline ready
-* [ ] Large-scale training
-* [ ] Benchmark evaluation
-![png](Figure_1.png)
----
-
-## 📌 Future Work | 未來方向
-
-* Scaling to larger models (7B+)
-* Integration with MoE
-* Long-context (>32k) optimization
-* Alignment & instruction tuning
+* [x] **V19 Core Implementation**: Reasoning Core & Latent Modulation.
+* [x] **Mini-Experiment (3060 Friendly)**: Optimized for 12GB VRAM.
+* [x] **Gate Monitoring**: Real-time tracking of reasoning core activity.
+* [ ] Scaling to V19-Large (7B+ with more reasoning blocks).
+* [ ] Benchmarking on logical reasoning tasks.
 
 ---
 
@@ -122,8 +85,6 @@ MIT License
 
 ---
 
-## ⭐ If you like this project
+## ⭐ Support the Project
 
-Give it a ⭐ on GitHub — it helps a lot!
-
----
+If you find this "Resonance + Reasoning" approach interesting, please give us a ⭐!
