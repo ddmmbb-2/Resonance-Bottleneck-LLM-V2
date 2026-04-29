@@ -20,7 +20,7 @@
 
 Compresses representations into a lower-dimensional latent space before attention expansion.
 在進入注意力計算前先進行潛空間壓縮，降低計算成本並提升表示效率。
-
+![png](Gemini_Generated_Image_tizztbtizztbtizz.png)
 ---
 
 ### 🔹 Resonance-Based Attention
