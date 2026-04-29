@@ -1,10 +1,10 @@
----
+
 
 # 🚀 Resonance-Bottleneck-LLM (V19-Mini)
 
 > *Beyond attention: Latent resonance with recursive thinking.*
 
----
+
 
 ## 🧠 Overview | 概述
 
