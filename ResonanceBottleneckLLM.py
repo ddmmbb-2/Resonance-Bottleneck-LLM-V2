@@ -9,35 +9,38 @@ from torch.amp import autocast
 from torch.utils.checkpoint import checkpoint
 from tqdm import tqdm
 from tokenizers import Tokenizer
+import csv
 
 # ==========================================
-# 🎯 V19-Mini 實驗配置 (3060 友善版)
+# 🎯 V20 Phase 1 實驗配置 (Global Workspace 引入)
 # ==========================================
 config = {
-    "d_model": 256,          
-    "n_heads": 4,           
-    "n_layers": 6,           # 局部推理實驗：只做 6 層
-    "latent_dim": 128,       
+    "d_model": 512,          
+    "n_heads": 8,            
+    "n_layers": 12,          
+    "latent_dim": 256,       
+    "workspace_tokens": 8,   # 🌐 新增：全局看板的 Token 數量
     "dropout": 0.1,          
     "max_seq_len": 512,      
-    "batch_size": 16,        
+    "batch_size": 8,         
     "block_size": 256,       
-    "accum_steps": 4,        
-    "think_steps": 2,        # 每次推理迭代 2 次
+    "accum_steps": 8,        
+    "think_steps": 2,        
     "lr": 3e-4,              
     "epochs": 100000,        
     "warmup_steps": 1000,    
-    "bin_data": "corpus_v15_clean.bin", 
-    "save_model": "d2_v19_mini.pth", 
+    "bin_data": "corpus_v17_mixed.bin", 
+    "save_model": "d2_v20_phase1.pth",   # 🗂️ 升級存檔名稱
+    "log_csv": "v20_phase1_log.csv",     # 📊 升級日誌名稱
     "vocab_name": "bpe_tokenizer_v12.json",     
     "vocab_size": 16384,                      
 }
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
-print(f"🔥 V19-Mini 實驗啟動中 | 設備: {device}")
+print(f"🔥 V20 Phase 1 啟動中 | 設備: {device} | 導入 Global Workspace")
 
 # ==========================================
-# 1. 資料加載
+# 1. 資料加載與日誌初始化
 # ==========================================
 if not os.path.exists(config["bin_data"]):
     raise FileNotFoundError(f"❌ 找不到 {config['bin_data']}！請確認檔案位置。")
@@ -52,8 +55,13 @@ def get_batch():
     y = torch.stack([torch.from_numpy(data[i+1:i+config["block_size"]+1].astype(np.int64)) for i in ix])
     return x.to(device), y.to(device)
 
+if not os.path.exists(config["log_csv"]):
+    with open(config["log_csv"], mode='w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(["Step", "Loss", "LR", "Gate_Values"])
+
 # ==========================================
-# 2. 基礎組件 (RMSNorm, RoPE, CausalConv1d, SwiGLU)
+# 2. 基礎組件 (維持不變)
 # ==========================================
 class RMSNorm(nn.Module):
     def __init__(self, dim, eps=1e-6):
@@ -104,7 +112,7 @@ class SwiGLU(nn.Module):
         return self.dropout(out)
 
 # ==========================================
-# 3. 核心 Attention (加入簡化版 Context 互動)
+# 3. 核心 Attention (維持不變)
 # ==========================================
 class LatentResonanceAttentionV18(nn.Module):
     def __init__(self, d_model, latent_dim, dropout=0.1):
@@ -130,7 +138,6 @@ class LatentResonanceAttentionV18(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def forward_with_context(self, context, query):
-        # 簡易版資訊交互：直接疊加
         return self.forward(context + query)
 
     def forward(self, x):
@@ -179,24 +186,76 @@ class LatentResonanceAttentionV18(nn.Module):
         return self.dropout(self.proj(out) * gate_val)
 
 # ==========================================
-# 4. V19 推理模塊與主模型
+# 4. V20 推理模塊與主模型 (🔥 Phase 1 重構核心)
 # ==========================================
-class ResonanceReasoningCore(nn.Module):
+class ResonanceReasoningCoreV20(nn.Module):
     def __init__(self, d_model, latent_dim, think_steps=2):
         super().__init__()
         self.steps = think_steps
+        self.latent_dim = latent_dim
+        
+        # --- 原本的 Reasoning 網路 ---
         self.step_modulator = nn.Embedding(think_steps, latent_dim * 2)
         self.latent_to_model = nn.Linear(latent_dim, d_model, bias=False)
         self.model_to_latent = nn.Linear(d_model, latent_dim, bias=False)
         self.reason_attn = LatentResonanceAttentionV18(d_model, latent_dim)
         self.gate = nn.Linear(latent_dim * 2, latent_dim)
         self.norm = RMSNorm(latent_dim)
-        
-        # Latent 初始化投影 (給個暖啟動)
         self.init_proj = nn.Linear(d_model, latent_dim)
         self.register_buffer("avg_gate_val", torch.zeros(1))
+        
+        # ==========================================
+        # 🌐 V20 Workspace 核心組件 (高階穩定版)
+        # ==========================================
+        
+        # 🔍 Read Attention Q, K, V
+        self.read_q = nn.Linear(latent_dim, latent_dim, bias=False)
+        self.read_k = nn.Linear(latent_dim, latent_dim, bias=False)
+        self.read_v = nn.Linear(latent_dim, latent_dim, bias=False)
+        
+        # ✍️ Write Attention Q, K, V
+        self.write_q = nn.Linear(latent_dim, latent_dim, bias=False)
+        self.write_k = nn.Linear(latent_dim, latent_dim, bias=False)
+        self.write_v = nn.Linear(latent_dim, latent_dim, bias=False)
+        self.write_update = nn.Linear(latent_dim, latent_dim)
 
-    def _step(self, x, h_latent, step_idx):
+        # 💡 升級 2: Read Gate 輸入維度增強 (h, w, h-w)
+        self.read_gate = nn.Linear(latent_dim * 3, latent_dim)
+        self.write_gate = nn.Linear(latent_dim * 2, latent_dim)
+        
+        # 降溫初始化
+        nn.init.constant_(self.write_gate.bias, -2.0)
+
+        # 💡 升級 1: 可學習的寫入縮放係數 (初始值 0.5)
+        self.work_alpha = nn.Parameter(torch.tensor(0.5))
+
+        self.read_temp = nn.Parameter(torch.ones(1))
+        self.write_temp = nn.Parameter(torch.ones(1))
+
+        self.work_norm = RMSNorm(latent_dim)
+
+    def _step(self, x, h_latent, workspace, step_idx):
+        # ==========================================
+        # 📖 1. Attention Read
+        # ==========================================
+        q_r = self.read_q(h_latent)  
+        k_r = self.read_k(workspace) 
+        v_r = self.read_v(workspace) 
+        
+        # 💡 升級 4: Temperature Clamping (0.3 ~ 3.0)
+        safe_read_temp = torch.clamp(F.softplus(self.read_temp), 0.3, 3.0)
+        scale_r = math.sqrt(self.latent_dim) * safe_read_temp
+        read_attn = F.softmax((q_r @ k_r.transpose(-2, -1)) / scale_r, dim=-1)
+        work_context = read_attn @ v_r  
+        
+        # 💡 升級 2: 增強版 Read Gate 輸入
+        diff_feat = h_latent - work_context
+        r_gate = torch.sigmoid(self.read_gate(torch.cat([h_latent, work_context, diff_feat], dim=-1)))
+        h_latent = h_latent + r_gate * work_context
+        
+        # ==========================================
+        # 🧠 2. 核心 Reasoning 邏輯 
+        # ==========================================
         step_ids = torch.full((x.size(0),), step_idx, device=x.device, dtype=torch.long)
         mod = self.step_modulator(step_ids).unsqueeze(1) 
         scale, bias = mod.chunk(2, dim=-1)
@@ -216,14 +275,41 @@ class ResonanceReasoningCore(nn.Module):
         
         if self.training:
             h_next = h_next + torch.randn_like(h_next) * 0.01
-            
-        return h_next
 
-    def forward(self, x):
-        h_latent = self.init_proj(x) # [B, L, Latent_dim]
+        # ==========================================
+        # ✍️ 3. Per-Slot Attention Write 
+        # ==========================================
+        q_w = self.write_q(workspace) 
+        k_w = self.write_k(h_next)    
+        v_w = self.write_v(h_next)    
+        
+        # 💡 升級 4: Temperature Clamping (0.3 ~ 3.0)
+        safe_write_temp = torch.clamp(F.softplus(self.write_temp), 0.3, 3.0)
+        scale_w = math.sqrt(self.latent_dim) * safe_write_temp
+        write_attn = F.softmax((q_w @ k_w.transpose(-2, -1)) / scale_w, dim=-1)
+        
+        update_candidate = torch.tanh(self.write_update(write_attn @ v_w))
+        
+        # 💡 升級 3: Write Gate 使用 detach() 隔離歷史梯度
+        w_gate = torch.sigmoid(self.write_gate(torch.cat([workspace.detach(), update_candidate], dim=-1)))
+        
+        # 💡 升級 1: 加入 work_alpha 縮放防爆炸
+        workspace_next = workspace + self.work_alpha * w_gate * update_candidate
+        
+        # 🛡️ Norm 防漂移
+        workspace_next = self.work_norm(workspace_next)
+        
+        # 💡 升級 5: 加入 Workspace 泛化噪聲
+        if self.training:
+            workspace_next = workspace_next + torch.randn_like(workspace_next) * 0.003
+            
+        return h_next, workspace_next
+
+    def forward(self, x, workspace):
+        h_latent = self.init_proj(x)
         for i in range(self.steps):
-            h_latent = checkpoint(self._step, x, h_latent, i, use_reentrant=False)
-        return self.latent_to_model(self.norm(h_latent))
+            h_latent, workspace = checkpoint(self._step, x, h_latent, workspace, i, use_reentrant=False)
+        return self.latent_to_model(self.norm(h_latent)), workspace
 
 class D2V18AttentionBlock(nn.Module):
     def __init__(self, d_model):
@@ -246,17 +332,20 @@ class D2V18ConvBlock(nn.Module):
         x = x + self.ffn(x)
         return x
 
-class D2V19MiniModel(nn.Module):
+class D2V20Phase1Model(nn.Module):
     def __init__(self, vocab_size, d_model, n_layers):
         super().__init__()
         self.embedding = nn.Embedding(vocab_size, d_model)
         nn.init.normal_(self.embedding.weight, mean=0.0, std=0.02)
         self.emb_dropout = nn.Dropout(config["dropout"])
         
+        # 🌐 初始化全域學習的 Workspace 基礎權重
+        self.workspace_base = nn.Parameter(torch.randn(config["workspace_tokens"], config["latent_dim"]) * 0.02)
+        
         self.blocks = nn.ModuleList()
         for i in range(n_layers):
-            if i in [2, 4]: # 🎯 指定局部使用 Reasoning Core
-                self.blocks.append(ResonanceReasoningCore(d_model, config["latent_dim"], config["think_steps"]))
+            if i in [3, 7, 11]: 
+                self.blocks.append(ResonanceReasoningCoreV20(d_model, config["latent_dim"], config["think_steps"]))
             elif i % 2 == 0:
                 self.blocks.append(D2V18AttentionBlock(d_model))
             else:
@@ -267,16 +356,26 @@ class D2V19MiniModel(nn.Module):
         self.head.weight = self.embedding.weight 
         
     def forward(self, x):
+        B = x.size(0)
         x = self.emb_dropout(self.embedding(x))
+        
+        # 🌐 將 Workspace 擴展至目前的 Batch Size (B, 8, latent_dim)
+        workspace = self.workspace_base.unsqueeze(0).expand(B, -1, -1).clone()
+        
         for block in self.blocks:
-            # 加入殘差確保 Reasoning Block 不會破壞主幹梯度
-            x = x + checkpoint(block, x, use_reentrant=False) if isinstance(block, ResonanceReasoningCore) else checkpoint(block, x, use_reentrant=False)
+            if isinstance(block, ResonanceReasoningCoreV20):
+                # 推理層：同時傳入 x 與 workspace，並接收更新後的 out_x 與 workspace
+                out_x, workspace = checkpoint(block, x, workspace, use_reentrant=False)
+                x = x + out_x
+            else:
+                x = block(x)
+                
         return self.head(self.out_ln(x))
 
 # ==========================================
 # 5. 訓練與監控迴圈
 # ==========================================
-model = D2V19MiniModel(config["vocab_size"], config["d_model"], config["n_layers"]).to(device)
+model = D2V20Phase1Model(config["vocab_size"], config["d_model"], config["n_layers"]).to(device)
 optimizer = torch.optim.AdamW(model.parameters(), lr=config["lr"], weight_decay=0.01)
 
 global_step = 0
@@ -286,19 +385,34 @@ if os.path.exists(config["save_model"]):
     model.load_state_dict(ckpt['model_state_dict'])
     optimizer.load_state_dict(ckpt['optimizer_state_dict'])
     global_step = ckpt.get('step', 0)
+else:
+    # 💡 繼承 V19 權重的小技巧：如果你想拿 V19-Stable 的權重來 Fine-tune V20
+    v19_path = "d2_v19_stable.pth"
+    if os.path.exists(v19_path):
+        print(f"🔄 偵測到 V19-Stable 權重，嘗試無痛繼承參數...")
+        ckpt = torch.load(v19_path, map_location=device, weights_only=True)
+        # strict=False 允許載入時略過新增加的 Workspace 權重
+        model.load_state_dict(ckpt['model_state_dict'], strict=False)
+        print("✅ 成功繼承 V19 主幹權重！新增的 Workspace 門控將從頭學習。")
 
-# 👇 新增這三行：強制告訴 PyTorch 初始學習率是多少 👇
 for param_group in optimizer.param_groups:
     param_group['initial_lr'] = config["lr"]
     param_group['lr'] = config["lr"]
 
-warmup_scheduler = LambdaLR(optimizer, lambda s: min(1.0, (s + 1) / config["warmup_steps"]), last_epoch=global_step)
+def get_lr_multiplier(step):
+    if step < config["warmup_steps"]:
+        return (step + 1) / config["warmup_steps"]
+    decay_steps = config["epochs"] - config["warmup_steps"]
+    current_decay_step = step - config["warmup_steps"]
+    min_lr_ratio = 0.1 
+    cosine_decay = min_lr_ratio + (1 - min_lr_ratio) * 0.5 * (1 + math.cos(math.pi * current_decay_step / decay_steps))
+    return cosine_decay
 
-print(f"🌟 V19-Mini 模型參數: {sum(p.numel() for p in model.parameters())/1e6:.1f}M")
-print(f"🚀 已喚醒 V19-Mini 模型！局部推理層在 Block 2 與 4，準備起飛！")
+warmup_scheduler = LambdaLR(optimizer, lr_lambda=get_lr_multiplier, last_epoch=global_step)
+print(f"🌟 V20 Phase 1 模型參數: {sum(p.numel() for p in model.parameters())/1e6:.1f}M")
 
 model.train()
-pbar = tqdm(initial=global_step, total=config["epochs"], desc="🧠 V19-Mini 訓練中")
+pbar = tqdm(initial=global_step, total=config["epochs"], desc="🧠 V20 Phase 1 訓練中")
 
 while global_step < config["epochs"]:
     optimizer.zero_grad(set_to_none=True)
@@ -318,28 +432,40 @@ while global_step < config["epochs"]:
     optimizer.step()
     
     avg_loss = total_loss / config["accum_steps"]
-    
-    if global_step < config["warmup_steps"]:
-        warmup_scheduler.step()
-
+    warmup_scheduler.step()
     global_step += 1
     
-    # 📊 抓取 Gate 的活躍度來觀察 Reasoning Core
-    gate_vals = [b.avg_gate_val.item() for b in model.blocks if isinstance(b, ResonanceReasoningCore)]
+    gate_vals = [b.avg_gate_val.item() for b in model.blocks if isinstance(b, ResonanceReasoningCoreV20)]
     gate_str = f"[{','.join([f'{g:.3f}' for g in gate_vals])}]" if gate_vals else "N/A"
+    current_lr = optimizer.param_groups[0]['lr']
 
     pbar.update(1)
     pbar.set_postfix({
         "Loss": f"{avg_loss:.4f}", 
-        "LR": f"{optimizer.param_groups[0]['lr']:.1e}",
+        "LR": f"{current_lr:.1e}",
         "Gate": gate_str
     })
 
+    if global_step % 10 == 0:
+        with open(config["log_csv"], mode='a', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow([global_step, f"{avg_loss:.4f}", f"{current_lr:.6f}", gate_str])
+
+    # 💾 每 2000 步自動存檔權重與備份
     if global_step % 2000 == 0:
         ckpt = {
             'step': global_step, 
             'model_state_dict': model.state_dict(), 
             'optimizer_state_dict': optimizer.state_dict()
         }
+        
+        # 1️⃣ 儲存最新進度 (覆蓋原本的 d2_v20_phase1.pth，方便腳本自動接續)
         torch.save(ckpt, config["save_model"])  
-        print(f"\n🚩 Step {global_step} 存檔成功！Gate狀態: {gate_str}")
+        
+        # 2️⃣ 另存一份帶有步數的獨立備份檔案 (防止模型崩潰時覆蓋掉好權重)
+        backup_model_name = config["save_model"].replace(".pth", f"_step_{global_step}.pth")
+        torch.save(ckpt, backup_model_name)
+        
+        print(f"\n🚩 Step {global_step} 存檔成功！已記錄至 {config['log_csv']}。Gate: {gate_str}")
+        print(f"   👉 最新進度: {config['save_model']}")
+        print(f"   👉 歷史備份: {backup_model_name}")
