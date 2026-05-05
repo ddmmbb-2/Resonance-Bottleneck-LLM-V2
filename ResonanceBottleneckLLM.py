@@ -318,12 +318,29 @@ class D2V20ModeratedModel(nn.Module):
         return self.head(self.out_ln(x))
 
 # ==========================================
-# 4. 訓練與監控迴圈
+# 4. 訓練與監控迴圈 (修復斷點續傳)
 # ==========================================
 model = D2V20ModeratedModel(config["vocab_size"], config["d_model"], config["n_layers"]).to(device)
 optimizer = torch.optim.AdamW(model.parameters(), lr=config["lr"], weight_decay=0.01)
 
 global_step = 0
+
+# ♻️ [修復重點 1]：讀取舊權重與進度
+if os.path.exists(config["save_model"]):
+    print(f"♻️ 發現存檔！嘗試接續訓練: {config['save_model']}")
+    ckpt = torch.load(config["save_model"], map_location=device, weights_only=True)
+    model.load_state_dict(ckpt['model_state_dict'])
+    
+    # 防呆機制：如果舊存檔沒有 optimizer_state_dict 也能正常載入權重
+    if 'optimizer_state_dict' in ckpt:
+        optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+        
+    global_step = ckpt.get('step', 0)
+    print(f"✅ 成功恢復進度：接續從第 {global_step} 步開始訓練！")
+else:
+    print("🌱 找不到存檔，從 Step 0 開始全新訓練")
+
+# 日誌初始化
 if not os.path.exists(config["log_csv"]):
     with open(config["log_csv"], mode='w', newline='') as f:
         writer = csv.writer(f)
@@ -335,7 +352,15 @@ def get_lr_multiplier(step):
     cosine_decay = 0.1 + 0.9 * 0.5 * (1 + math.cos(math.pi * (step - config["warmup_steps"]) / decay_steps))
     return cosine_decay
 
-warmup_scheduler = LambdaLR(optimizer, lr_lambda=get_lr_multiplier)
+
+for param_group in optimizer.param_groups:
+    param_group.setdefault('initial_lr', config["lr"])
+
+
+
+
+# 注意：scheduler 要傳入 global_step，這樣中斷恢復後 LR 曲線才不會從頭算
+warmup_scheduler = LambdaLR(optimizer, lr_lambda=get_lr_multiplier, last_epoch=global_step if global_step > 0 else -1)
 
 model.train()
 pbar = tqdm(initial=global_step, total=config["epochs"], desc="🧠 V20 Moderated 訓練中")
@@ -360,13 +385,20 @@ while global_step < config["epochs"]:
     warmup_scheduler.step()
     global_step += 1
     
-    # 💡 [動態 Alpha 更新]：監控 Loss，逐步解放白板
-    target_alpha = 0.5 if avg_loss < 3.0 else 0.01
+    # [動態 Alpha 更新]
+    # 📈 [升級版：階梯式動態 Alpha 更新]
+    if avg_loss < 2.8:
+        target_alpha = 0.5   # 🟢 完全解放：語法已精通，全力發展全局推理
+    elif avg_loss < 3.0:
+        target_alpha = 0.2   # 🟡 深度融合：開始讓白板主導主題
+    elif avg_loss < 3.2:
+        target_alpha = 0.05  # 🟠 輕微透氣：讓模型習慣白板的存在 (你現在的階段)
+    else:
+        target_alpha = 0.01  # 🔴 絕對封印：專心練基礎語法
     current_alpha = 0.0
     with torch.no_grad():
         for block in model.blocks:
             if isinstance(block, ResonanceReasoningCoreV20):
-                # EMA 更新 Alpha，避免突變引發不穩定
                 block.work_alpha.copy_(block.work_alpha * 0.995 + target_alpha * 0.005)
                 current_alpha = block.work_alpha.item()
 
@@ -381,5 +413,17 @@ while global_step < config["epochs"]:
             writer = csv.writer(f)
             writer.writerow([global_step, f"{avg_loss:.4f}", f"{optimizer.param_groups[0]['lr']:.6f}", f"{current_alpha:.4f}", gate_str])
 
+    # 💾 [修復重點 2]：每 1000 步妥善存檔 (包含 optimizer 狀態與多重備份)
     if global_step % 1000 == 0:
-        torch.save({'step': global_step, 'model_state_dict': model.state_dict()}, config["save_model"])
+        ckpt = {
+            'step': global_step, 
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict() # 把優化器狀態存起來
+        }
+        
+        # 1. 覆蓋主檔 (方便腳本下次自動讀取)
+        torch.save(ckpt, config["save_model"])
+        
+        # 2. 額外另存一份帶有步數的「歷史快照」
+        snapshot_name = config["save_model"].replace(".pth", f"_step_{global_step}.pth")
+        torch.save(ckpt, snapshot_name)
