@@ -230,26 +230,29 @@ class ResonanceReasoningCore(nn.Module):
         gate_val = torch.sigmoid(self.gate(torch.cat([h_latent, delta_latent_clamped], dim=-1)) * 1.2)
         h_next = h_latent + self.gamma * (gate_val * torch.tanh(delta_latent_clamped))
 
-        # 🎯 核心修改：效能獎勵與懲罰機制
-        diff = torch.norm(delta_latent_clamped.detach(), p=2, dim=-1, keepdim=True)
+        # 🎯 核心修改：效能獎勵與懲罰機制 (加入維度標準化)
+        raw_diff = torch.norm(delta_latent_clamped.detach(), p=2, dim=-1, keepdim=True)
+        # 縮放到單一維度的平均變化量 (將原本的 12 變成約 0.75)
+        diff_norm = raw_diff / math.sqrt(config["latent_dim"])
         
         if self.training:
-            # 1. 懶惰懲罰 (防止 diff 趨近於 0)
-            lazy_penalty = torch.exp(-diff * 20.0)
+            # 1. 懶惰懲罰：低於 0.1 嚴厲懲罰
+            lazy_penalty = torch.exp(-diff_norm * 10.0)
             
-            # 2. 混亂懲罰 (防止 diff 過大，設 3.0 為紅線)
-            chaos_penalty = F.relu(diff - 3.0)
+            # 2. 混亂懲罰：高於 1.5 才懲罰 (模型現在是 0.75，非常安全)
+            chaos_penalty = F.relu(diff_norm - 1.5)
             
-            # 3. 有效思考獎勵 (鐘形曲線，黃金區間設在 0.7 左右)
-            reward = -torch.exp(-((diff - 0.7)**2) / 0.2)
+            # 3. 有效思考獎勵：黃金區間設在 0.7
+            reward = -torch.exp(-((diff_norm - 0.7)**2) / 0.1)
             
             # 合併為推理品質 Loss
-            quality_loss = (5.0 * lazy_penalty + 1.0 * chaos_penalty + 1.5 * reward).mean()
+            quality_loss = (3.0 * lazy_penalty + 1.0 * chaos_penalty + 1.5 * reward).mean()
         else:
             quality_loss = 0.0
 
-        # 改進的 Target Halt：當 diff 極小時，不允許輕易退出
-        target_halt = torch.exp(-config["halt_tau"] / (diff + 1e-5))
+        # 改進的 Target Halt：如果 diff_norm 是健康的 0.75，target 大約是 0.08 (繼續思考)
+        # 如果模型又想偷懶變成 0.0，target 就會變成 1.0 (強制退出)
+        target_halt = torch.exp(-diff_norm / 0.3)
         
         pred_halt_logit = self.exit_gate(h_next)
         pred_halt = torch.sigmoid(pred_halt_logit)
@@ -265,7 +268,8 @@ class ResonanceReasoningCore(nn.Module):
         
         if self.training:
             self.avg_gate_val = 0.9 * self.avg_gate_val + 0.1 * gate_val.detach().mean()
-            self.avg_diff = 0.9 * self.avg_diff + 0.1 * diff.mean()
+            # 這裡記錄標準化後的 diff_norm，這樣你在畫面上看到的就會是 0.75 左右
+            self.avg_diff = 0.9 * self.avg_diff + 0.1 * diff_norm.mean()
             self.avg_halt_prob = 0.9 * self.avg_halt_prob + 0.1 * pred_halt.detach().mean()
             
             # 加入微小噪聲，打破局部最優
@@ -366,23 +370,17 @@ if os.path.exists(config["save_model"]):
     ckpt = torch.load(config["save_model"], map_location=device, weights_only=True)
     model.load_state_dict(ckpt['model_state_dict'])
     
-    # ==========================================
-    # 💉 執行外科手術：強制喚醒推理層
-    # ==========================================
-    print("💉 執行外科手術重置：正在打破局部最優，喚醒推理層...")
-    with torch.no_grad():
-        for i in [3, 7, 11]: 
-            block = model.blocks[i]
-            # 1. 偏置重置：讓 P(Exit) 初始靠近 0.26 (傾向於不退出)
-            block.exit_gate.bias.fill_(-1.0) 
-            block.exit_gate.weight.data *= 0.1
-            
-            # 2. 提升 LayerScale：強制放大殘差分支的影響力
-            block.gamma.fill_(0.02)
-            
-            # 3. 擾動特徵門控：打破可能已經死掉的通道
-            block.gate.weight.data += torch.randn_like(block.gate.weight.data) * 0.02
-    print("✅ 喚醒完成！推理層已注射活力藥劑。")
+    # === 👇 把這段「外科手術」註解掉或刪除 👇 ===
+    # print("💉 執行外科手術重置：正在打破局部最優，喚醒推理層...")
+    # with torch.no_grad():
+    #     for i in [3, 7, 11]: 
+    #         block = model.blocks[i]
+    #         block.exit_gate.bias.fill_(-1.0) 
+    #         block.exit_gate.weight.data *= 0.1
+    #         block.gamma.fill_(0.02)
+    #         block.gate.weight.data += torch.randn_like(block.gate.weight.data) * 0.02
+    # print("✅ 喚醒完成！推理層已注射活力藥劑。")
+    # === 👆 把這段「外科手術」註解掉或刪除 👆 ===
 
     optimizer.load_state_dict(ckpt['optimizer_state_dict'])
     global_step = ckpt.get('step', 0)
