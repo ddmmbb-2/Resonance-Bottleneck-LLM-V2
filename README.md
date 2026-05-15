@@ -1,97 +1,86 @@
 
 
-# 🚀 Resonance-Bottleneck-LLM (V20-Adaptive)
+# 🚀 Resonance-Bottleneck-LLM (V22-Optimizer)
 
-> *Beyond attention: Latent resonance, recursive thinking, and self-aware adaptive depth.*
+> *Beyond attention: The model is no longer just a predictor, but an iterative optimizer of its own latent logic.*
 
 ## 🧠 Overview | 概述
 
-**Resonance-Bottleneck-LLM (V20-Adaptive)** 正式邁入 **「自適應深度 (Adaptive Depth)」** 與 **「效能獎勵掛載」** 的全新階段（修復 Early Collapse 版本）。在繼承潛空間壓縮與共振式注意力的基礎上，V20-Adaptive 將開發重心轉向了賦予模型「知道何時該停止思考」的能力。
+**Resonance-Bottleneck-LLM (V22-Optimizer)** 標誌著架構設計的重大轉向。我們不再僅僅依賴增加層數來獲取智能，而是將模型視為一個**遞迴優化系統**。在 V22 中，我們正式引入了「三明治夾心架構 (Sandwich Architecture)」，融合了高精度注意力、SSM 全域背景掃描，以及最核心的 **Latent Optimizer Core**。
 
-透過引入精密的**效能獎勵機制 (Performance Reward Mechanism)** 與**損失驅動的課程學習 (Loss-Driven Curriculum)**，模型現在能夠在局部遞迴推理中自我評估思考品質，動態決定是否提早退出 (Early Exit)，從而在推理效能與運算成本之間取得完美的平衡。
+透過 V22 的**信用分配機制 (Credit Assignment)** 與 **QK-Norm 交叉注意力**，模型現在不僅「知道何時停止」，更學會了「如何高效地修正自己的錯誤」。
 
 ---
 
 ## ✨ Key Features | 核心特色
 
-### 🔹 Adaptive Depth & Early Exit (Phase 2!)
+### 🔹 Hybrid Sandwich Architecture (三明治夾心架構)
 
-Introduces a shadow gating mechanism that allows the Reasoning Cores to dynamically halt their recursive thinking.
-引入影子門控機制，讓推理核心能夠動態中斷遞迴思考。
+V22 徹底重構了層級堆疊策略，將三種不同性質的運算模組交織在一起：
 
-* **Target Halt:** 動態計算退出機率，當潛在特徵變化量偏離健康區間時強制觸發退出。
-* **Inference Exit Threshold:** 推理時的信心閾值（設為 `0.85`），達到即提前結束思考步驟，大幅節省算力。
+* **Precision Retrieval (Attention):** 負責精確的短程特徵檢索。
+* **Global Context (SSM):** 透過平行掃描 (Parallel Scan) 捕捉全域背景記憶，取代了過時的局部卷積。
+* **Logic Optimization (Optimizer Core):** 作為動態工作區，對潛空間特徵進行深度邏輯提煉。
 
-### 🔹 Latent Thinking Quality Control (效能獎勵機制)
+### 🔹 SSM Global Scan (時間序列全域掃描)
 
-Replaced static loops with a dimension-normalized quality assessment of the latent delta.
-針對模型在潛空間中的「思考軌跡」進行嚴格的品質控管：
+引入了基於 `A_log` 離散化參數的 SSM 模組。這讓模型具備了類似 Mamba 的長距離依賴處理能力，同時透過我們自研的穩定 Cumsum 技巧，在不依賴自定義 CUDA Kernel 的情況下實現了高效的全域掃描。
 
-* **Lazy Penalty (懶惰懲罰):** 嚴厲懲罰微小且無效的特徵變化（低於 0.1）。
-* **Chaos Penalty (混亂懲罰):** 壓制過度劇烈的特徵震盪（高於 1.5），確保穩定收斂。
-* **Effective Thinking Reward (有效思考獎勵):** 鼓勵模型將特徵變化量維持在「黃金區間」（約 0.7 左右），最大化推理效益。
-* **Entropy Regularization (熵損失):** 防止預測值極化，保持門控的靈活性與彈性。
+### 🔹 Latent Optimizer Core (潛空間優化核心)
 
-### 🔹 Loss-Driven Curriculum (損失驅動的課程學習)
+推理核心現在運作起來更像是一個最小化的 Adam 優化器：
 
-A smart curriculum that smoothly activates the halting mechanism based on the model's fundamental understanding.
-利用平滑交叉熵（Smoothed CE Loss）作為避震器，動態調整門控權重 (`halt_weight`)：
+* **QK-Norm Cross Attention:** 引入餘弦相似度注意力與**可學習溫度參數**，徹底杜絕熵崩潰 (Entropy Collapse)。
+* **Gradient Contamination Fix:** 透過梯度縮放（僅保留 10% 梯度傳回 KV），防止深層思考過度干擾基礎表徵空間。
+* **Direct Latent Normalization:** 在每一步思考後直接進行 RMSNorm，防止潛特徵在多次迭代中產生漂移。
 
-* 當平滑 Loss 降至 `4.5` 時，門控機制開始微微甦醒。
-* 當平滑 Loss 降至 `3.0` 時，門控火力全開進入完全體。
-* 完美避免模型在尚未學會基礎語意前，就因提早退出機制而導致的早期崩潰 (Early Collapse)。
+### 🔹 Step-wise Credit Assignment (階梯式信用分配機制)
 
-### 🔹 Latent Bottleneck & Selective Recurrent Reasoning
+我們捨棄了固定的懲罰，改用動態的表現評估：
 
-Compresses information into a latent space using phase-aware resonance gating. Specific layers (Reasoning Cores) use a recurrent loop (`think_steps=2`) to iteratively refine latent representations before passing them forward.
-將資訊壓縮至潛空間並進行共振式計算。特定層級被指定為推理核心，透過遞迴循環機制進行多次迭代思考。
+* **Monotonicity Constraint (單調遞減約束):** 強迫模型下一步的表現必須優於上一步。
+* **Margin-based Penalty:** 如果第 N 步思考導致 Loss 上升，模型會受到嚴厲懲罰，迫使優化器學會撤回無效的推理軌跡。
+* **Incremental Weighting:** 給予後續思考步驟更高的權重 (0.2 -> 0.3 -> 0.5)，確保深度推理產出的 Logits 具有最高品質。
 
 ---
 
-## 🏗️ Architecture | 模型架構 (V20-Adaptive Variant)
+## 🏗️ Architecture | 模型架構 (V22-Optimizer Variant)
 
-V20 採用交替結構，將自適應推理層平均分佈，配置如下：
+V22 採用非對稱堆疊，邏輯分佈如下：
 
-| Layer | Type | Description |
+| Layer Index | Module Type | Functional Role |
 | --- | --- | --- |
-| **Layer 0, 1, 2** | D2V18 Attention / Conv | V18.1 Resonance Attention & Causal 1D Conv |
-| **Layer 3** | **Reasoning Core V20** ⭐ | **Recurrent Thinking + Adaptive Early Exit** |
-| **Layer 4, 5, 6** | D2V18 Attention / Conv | Standard blocks |
-| **Layer 7** | **Reasoning Core V20** ⭐ | **Recurrent Thinking + Adaptive Early Exit** |
-| **...** | ... | ... |
-| **Layer 11** | **Reasoning Core V20** ⭐ | **Recurrent Thinking + Adaptive Early Exit** |
+| **0, 2, 4, 6, 8, 10** | **Resonance Attention** | 高精度特徵檢索與共振門控 |
+| **1, 5, 9** | **D2V20 SSM Block** | 全域時間序列背景掃描 (Global Context) |
+| **3, 7, 11** | **Optimizer Core** ⭐ | **遞迴優化工作區 (Think Steps: 3)** |
 
 ---
 
-## ⚙️ Training Setup | 訓練設定 (V20-Adaptive)
+## ⚙️ Training Setup | 訓練設定 (V22)
 
-* **Model Size**: 512 dim / 12 layers
-* **Attention Heads**: 8
-* **Latent Dim**: 256
-* **Thinking Steps**: 2 (at Layers 3, 7, 11)
-* **Adaptive Gating**: `halt_tau = 0.05`, `halt_weight = 0.5`
-* **Optimization**: AdamW + Cosine Decay Warmup + Autocast (BFloat16)
-* **Stability**: Dual-Checkpointing & Smoothed CE Tracking (Loss 避震器)
+* **Model Dimensions**: 512 d_model / 256 latent_dim.
+* **Thinking Steps**: 3 (於第 3, 7, 11 層觸發)。
+* **Optimization**: AdamW + Autocast (BFloat16)。
+* **Loss Mechanics**: 結合了 Step-wise CE, Margin Loss, 以及 Halt Binary Cross Entropy。
+* **Inference Exit**: `threshold = 0.85` (信心達標即停)。
 
 ---
 
 ## 📊 Design Motivation | 設計動機
 
-The V20-Adaptive update explores **"Self-Awareness in Latent Thinking"**:
+V22-Optimizer 的核心哲學是 **「特徵的演化而非堆疊」**：
 
-> **If V19 proved that local recursive thinking works, V20-Adaptive teaches the model *when to stop*. By observing the dimension-normalized trajectory of its own thoughts, the model is rewarded for productive logic and penalized for lazy or chaotic updates, all guarded by a smooth loss-driven curriculum.**
-
-V20-Adaptive 的設計核心在於「潛空間思考的自我認知」：讓模型不僅會思考，還知道何時該見好就收。透過觀測標準化後的潛特徵變化軌跡，模型在產出有效邏輯時獲得獎勵，在偷懶或混亂時受到懲罰，並由平滑的損失函數逐步驅動其學習進程，徹底解決了動態深度模型難以訓練的痛點。
+> **傳統 LLM 像是一條直線流水線，每一層只能處理一次資訊；V22 則像是一個實驗室，在 Optimizer Core 中，模型被允許針對當前語境進行三次「自我修正」。透過信用分配機制，我們確保了每一次的修正都是有意義的，讓 12 層的模型展現出遠超其參數規模的邏輯深度。**
 
 ---
 
 ## 🚧 Status | 開發狀態
 
-* [x] **V19 Core**: Reasoning Core & Latent Modulation.
-* [x] **Phase 2 (V20-Adaptive)**: Shadow Adaptive Depth & Early Exit routing.
-* [x] **Quality Control**: Reward/Penalty mechanics for latent delta trajectory.
-* [x] **Curriculum Learning**: Smoothed CE-driven dynamic halt weighting.
-* [ ] Phase 3: Span Compression & Phase Recall.
+* [x] **V20 SSM**: 全域掃描取代局部卷積。
+* [x] **V21 QK-Norm**: 解決交叉注意力的穩定性問題。
+* [x] **V22 Optimizer Core**: 實裝信用分配與梯度隔離。
+* [x] **Adaptive Exit**: 基於特徵變化量的動態停機邏輯。
+* [ ] Phase 4: 多模態共振與跨樣本記憶槽。
 
 ---
 
@@ -103,4 +92,4 @@ MIT License
 
 ## ⭐ Support the Project
 
-If you find this "Resonance + Adaptive Reasoning" approach interesting, please give us a ⭐!
+如果您對「潛空間優化器」與「三明治 SSM 架構」感興趣，請給我們一個 ⭐！
