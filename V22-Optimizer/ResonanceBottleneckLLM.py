@@ -13,29 +13,29 @@ import csv
 import shutil
 
 # ==========================================
-# 🎯 V22-Optimizer 實驗配置 (Latent Optimizer 架構)
+# 🎯 V22-Optimizer 實驗配置 (精簡重複項)
 # ==========================================
 config = {
-    "d_model": 512,          
-    "n_heads": 8,            
-    "n_layers": 12,          
-    "latent_dim": 256,       
-    "dropout": 0.1,          
-    "max_seq_len": 512,      
-    "batch_size": 8,         
-    "block_size": 256,       
-    "accum_steps": 8,        
-    "think_steps": 3,        
+    "d_model": 512,
+    "n_heads": 8,
+    "n_layers": 12,
+    "latent_dim": 256,
+    "dropout": 0.1,
+    "max_seq_len": 512,
+    "batch_size": 8,
+    "block_size": 256,
+    "accum_steps": 8,
+    "think_steps": 3,
     "lr": 3e-4,              
-    "epochs": 100000,        
-    "warmup_steps": 1000,    
-    
+    "min_lr": 3e-5,          
+    "warmup_steps": 500,     # 統一只保留一個 warmup_steps
+    "max_steps": 20000,      
+    "epochs": 100000,        # 這是 while 迴圈的終點
     "bin_data": "corpus_v20_twllm.bin", 
     "save_model": "d2_v22_twllm_optimizer.pth", 
     "log_csv": "v22_twllm_optimizer_log.csv",   
     "vocab_name": "bpe_tokenizer_v12.json",     
     "vocab_size": 16384,
-    
     "halt_tau": 0.05,                  
     "inference_exit_threshold": 0.85   
 }
@@ -467,113 +467,124 @@ class D2V20HybridModel(nn.Module):
             
         return final_logits
 
+
+def get_lr(it):
+    # 1. Linear Warmup: 在預熱期內線性增加學習率
+    if it < config["warmup_steps"]:
+        return config["lr"] * it / config["warmup_steps"]
+    
+    # 2. 超過最大步數後，維持在最小學習率
+    if it > config["max_steps"]:
+        return config["min_lr"]
+    
+    # 3. Cosine Decay: 在 Warmup 與 Max_steps 之間進行餘弦衰減
+    decay_ratio = (it - config["warmup_steps"]) / (config["max_steps"] - config["warmup_steps"])
+    assert 0 <= decay_ratio <= 1
+    coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) 
+    return config["min_lr"] + coeff * (config["lr"] - config["min_lr"])
+
 # ==========================================
-# 7. 訓練迴圈
+# 7. 訓練迴圈與接續訓練
 # ==========================================
 model = D2V20HybridModel(vocab_size, config["d_model"], config["n_layers"]).to(device)
 optimizer = torch.optim.AdamW(model.parameters(), lr=config["lr"], weight_decay=0.01)
 
-pbar = tqdm(initial=0, total=config["epochs"], desc="訓練中")
-
-smoothed_ce = None
 global_step = 0 
+smoothed_ce = None
+
+# 🌟 補上接續訓練 (Resume Training) 邏輯
+if os.path.exists(config["save_model"]):
+    print(f"🔄 找到檢查點 {config['save_model']}，正在載入訓練狀態...")
+    # 若有使用 PyTorch 2.0+，建議加上 weights_only=False 或是預設即可
+    checkpoint = torch.load(config["save_model"], map_location=device)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    global_step = checkpoint.get('step', 0)
+    smoothed_ce = checkpoint.get('smoothed_ce', None)
+    print(f"✅ 成功從 Step {global_step} 繼續訓練！")
+else:
+    print("🆕 未找到既有檢查點，從頭開始訓練。")
+
+# 🌟 注意這裡：將 tqdm 的 initial 設為 global_step，這樣進度條才會接續顯示
+pbar = tqdm(initial=global_step, total=config["epochs"], desc="訓練中")
 
 while global_step < config["epochs"]:
+    # 1. 更新當前步數的學習率
+    lr = get_lr(global_step)
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = lr
+
     optimizer.zero_grad(set_to_none=True)
     
+    # 2. 梯度累積訓練
     step_final_ce = 0
-    step_0_ce = 0
-    step_improvement = 0
     step_halt_loss = 0 
     
     for _ in range(config["accum_steps"]):
         xb, yb = get_batch()
-        
         with autocast('cuda', dtype=torch.bfloat16):
             final_logits, step_logits, diffs, halts = model(xb, return_all_steps=True)
-            
             target = yb.view(-1)
             final_ce = F.cross_entropy(final_logits.view(-1, vocab_size), target)
             ce_losses = [F.cross_entropy(logits.view(-1, vocab_size), target) for logits in step_logits]
             
+            # --- 這裡插入你精密的 Loss 計算邏輯 (step_weights, Margin-based 等) ---
             actual_steps = len(ce_losses)
-            
-            # 🌟 修復: Reasoning Collapse (Step-wise 權重設計)
-            # 給予每個思考步驟遞增的權重 (例如: 0.2, 0.3, 0.5)，強迫每一步都必須產出合理的 Logits
-            step_weights = [ (i + 1) / sum(range(1, actual_steps + 1)) for i in range(actual_steps) ]
+            step_weights = [(i + 1) / sum(range(1, actual_steps + 1)) for i in range(actual_steps)]
             
             total_loss = 0
-            step_improvement_loss = 0
-            
             for i in range(actual_steps):
-                # 1. 基礎的 Step CE Loss (防止 Step 3 獨大)
                 total_loss += ce_losses[i] * step_weights[i]
-                
                 if i > 0:
-                    # 🌟 修復: 完整的 Credit Assignment (Margin-based)
-                    # 計算這一步的表現變化：大於 0 代表退步，小於 0 代表進步
                     ce_delta = (ce_losses[i] - ce_losses[i-1]).detach()
-                    
-                    # 如果退步 (ce_delta > 0)，模型應該減少這一層的更新幅度 (diffs 應該要小)
-                    # 如果進步 (ce_delta < 0)，模型這層的更新是有價值的
-                    # 我們用 ce_delta 來作為懲罰/獎勵係數
-                    invalid_effort = F.relu(ce_delta) * diffs[i].mean() * 0.5
-                    total_loss += invalid_effort
-                    
-                    # 嚴格單調遞減約束：下一步不能比上一步爛
-                    total_loss += F.relu(ce_losses[i] - ce_losses[i-1]) * 1.5
+                    total_loss += F.relu(ce_delta) * diffs[i].mean() * 0.5 # Invalid effort
+                    total_loss += F.relu(ce_losses[i] - ce_losses[i-1]) * 1.5 # Monotonicity
+                total_loss += (diffs[i] ** 2).mean() * 0.02 # L2
                 
-                # L2 正規化：防止 Latent 變動過於劇烈
-                total_loss += (diffs[i] ** 2).mean() * 0.02
-                
-                # Halt 預測 Loss (保持原本的動態停機邏輯)
                 target_halt = torch.sigmoid(2.0 - diffs[i].detach() * 3.0) 
                 halt_loss = F.binary_cross_entropy_with_logits(halts[i], target_halt)
                 total_loss += halt_loss * 0.2
-                
                 step_halt_loss += halt_loss.item() / actual_steps
-                    
-            loss_to_back = total_loss / config["accum_steps"]
-            overall_improvement = ce_losses[0] - final_ce
-        
-        loss_to_back.backward()
-        
-        step_final_ce += final_ce.item()
-        step_0_ce += ce_losses[0].item()
-        step_improvement += overall_improvement.item()
+            # -----------------------------------------------------------
 
+            loss_to_back = total_loss / config["accum_steps"]
+            loss_to_back.backward()
+            step_final_ce += final_ce.item()
+
+    # 3. 優化器更新與梯度裁剪
     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)
     optimizer.step()
     
+    # 4. 統計平滑 Loss
     avg_ce = step_final_ce / config["accum_steps"]
     avg_halt = step_halt_loss / config["accum_steps"]
-    
-    global_step += 1
-    
     if smoothed_ce is None:
         smoothed_ce = avg_ce
     else:
         smoothed_ce = 0.99 * smoothed_ce + 0.01 * avg_ce 
     
+    # 5. 更新步數與進度條 (🌟 關鍵：這裡只執行一次)
+    global_step += 1
+    pbar.update(1)
+
+    # 6. 提取 Log 資訊
     diffs_log = [b.avg_diff.item() for b in model.blocks if isinstance(b, ResonanceOptimizerCore)]
     halts_log = [b.avg_halt_prob.item() for b in model.blocks if isinstance(b, ResonanceOptimizerCore)]
-    
     diff_str = f"[{','.join([f'{d:.2f}' for d in diffs_log])}]" if diffs_log else "N/A"
     halt_str = f"[{','.join([f'{h:.2f}' for h in halts_log])}]" if halts_log else "N/A"
 
-    pbar.update(1)
     pbar.set_postfix({
         "CE": f"{avg_ce:.3f}", 
-        "sCE": f"{smoothed_ce:.3f}", 
-        "QL": f"{avg_halt:.3f}", 
+        "LR": f"{lr:.2e}", 
         "D": diff_str,      
         "P": halt_str      
     })
 
+    # 7. 寫入 CSV 與 存檔
     if global_step % 10 == 0:
         with open(config["log_csv"], mode='a', newline='') as f:
             writer = csv.writer(f)
-            writer.writerow([global_step, f"{avg_ce:.4f}", f"{smoothed_ce:.4f}", f"{avg_halt:.4f}", f"{optimizer.param_groups[0]['lr']:.6f}", diff_str, halt_str])
+            writer.writerow([global_step, f"{avg_ce:.4f}", f"{smoothed_ce:.4f}", f"{avg_halt:.4f}", f"{lr:.6f}", diff_str, halt_str])
 
     if global_step % 1000 == 0:
         ckpt = {
