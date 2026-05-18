@@ -48,7 +48,7 @@ config = {
     "max_seq_len": 512,
     "batch_size": 8,
     "block_size": 256,
-    "accum_steps": 8,
+    "accum_steps": 4,
     "think_steps": 3,
     "lr": 3e-4,              
     "min_lr": 3e-5,          
@@ -293,8 +293,10 @@ class BrainInspiredHippocampus(nn.Module):
         h_dg = F.silu(self.dg_expand(h_query)) 
         h_curr = self.dg_norm(h_dg)
         
+        # ==========================================
         # 步驟 2: CA3 遞迴模式補全 (迭代收斂)
-        iters = 2
+        # ==========================================
+        iters = 1
         for _ in range(iters):
             Q = self.q_proj(h_curr).view(B, L, self.n_heads, self.d_head).transpose(1, 2)
             K = self.k_proj(h_curr).view(B, L, self.n_heads, self.d_head).transpose(1, 2)
@@ -305,20 +307,21 @@ class BrainInspiredHippocampus(nn.Module):
             
             scores = (Q @ K.transpose(-2, -1)) * torch.exp(self.beta)
             
-            # 🛡️ 側向抑制 (Lateral Inhibition)：贏者全拿
-            if L > self.top_k:
-                topk_vals, _ = torch.topk(scores, self.top_k, dim=-1)
-                kth_vals = topk_vals[..., -1].unsqueeze(-1)
-                scores = scores.masked_fill(scores < kth_vals, float('-inf'))
-            
-            # 因果遮罩
+            # 🌟 修復 1：必須【先】套用因果遮罩，確保不偷看未來
             mask = torch.triu(torch.ones(L, L, device=h_query.device), diagonal=1).bool()
             scores = scores.masked_fill(mask, float('-inf'))
+            
+            # 🌟 修復 2：【再】做側向抑制 (Top-K)
+            if L > self.top_k:
+                # 找出每行合法範圍內第 K 大的值
+                topk_vals, _ = torch.topk(scores, self.top_k, dim=-1)
+                kth_vals = topk_vals[..., -1].unsqueeze(-1)
+                # 將小於該閾值的分數抹除 (注意：-inf < -inf 在 PyTorch 中為 False，所以不會誤殺合法 token)
+                scores = scores.masked_fill(scores < kth_vals, float('-inf'))
             
             attn = F.softmax(scores, dim=-1)
             out = (attn @ V).transpose(1, 2).contiguous().view(B, L, self.dg_dim)
             
-            # 殘差更新
             h_curr = self.dg_norm(h_curr + out)
             
         # 步驟 3: CA1 輸出增量
