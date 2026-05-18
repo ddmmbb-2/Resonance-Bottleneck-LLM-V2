@@ -239,7 +239,7 @@ class ResonanceOptimizerCore(nn.Module):
         self.cross_attn = ReasonCrossAttention(d_model, latent_dim, config["n_heads"])
         self.gate = nn.Linear(latent_dim * 2, latent_dim)
         self.norm = RMSNorm(latent_dim)
-        self.gamma = nn.Parameter(torch.ones(latent_dim) * 1e-3)
+        self.gamma = nn.Parameter(torch.ones(latent_dim) * 0.1)
         self.exit_gate = nn.Linear(latent_dim, 1) 
         
         self.register_buffer("avg_diff", torch.zeros(1)) 
@@ -277,7 +277,7 @@ class ResonanceOptimizerCore(nn.Module):
             gate_val = torch.sigmoid(self.gate(torch.cat([h_latent, delta_latent], dim=-1)))
             
             # 🌟 修復 6: 直接對 h_next 做 Normalization，防止長期 Latent 漂移
-            h_next = self.norm(h_latent + self.gamma * (gate_val * torch.tanh(delta_latent)))
+            h_next = self.norm(h_latent + gate_val * delta_latent)
 
             raw_diff = torch.norm(delta_latent_clamped.detach(), p=2, dim=-1, keepdim=True)
             diff_norm = raw_diff / math.sqrt(config["latent_dim"])
@@ -529,27 +529,30 @@ while global_step < config["epochs"]:
             ce_losses = [F.cross_entropy(logits.view(-1, vocab_size), target) for logits in step_logits]
             
             # --- 這裡插入你精密的 Loss 計算邏輯 (step_weights, Margin-based 等) ---
+            # ==========================================
+            # 方案 A：純淨的逐步引導 (返璞歸真版)
+            # ==========================================
             actual_steps = len(ce_losses)
+            # 讓越深層的思考步驟，佔據越高的 Loss 權重 (例如 3 步就是 1/6, 2/6, 3/6)
             step_weights = [(i + 1) / sum(range(1, actual_steps + 1)) for i in range(actual_steps)]
             
             total_loss = 0
             for i in range(actual_steps):
+                # 1. 核心目標：讓每個思考步驟都能預測 Token
                 total_loss += ce_losses[i] * step_weights[i]
-                if i > 0:
-                    ce_delta = (ce_losses[i] - ce_losses[i-1]).detach()
-                    total_loss += F.relu(ce_delta) * diffs[i].mean() * 0.5 # Invalid effort
-                    total_loss += F.relu(ce_losses[i] - ce_losses[i-1]) * 1.5 # Monotonicity
-                total_loss += (diffs[i] ** 2).mean() * 0.02 # L2
                 
-                target_halt = torch.sigmoid(2.0 - diffs[i].detach() * 3.0) 
-                halt_loss = F.binary_cross_entropy_with_logits(halts[i], target_halt)
-                total_loss += halt_loss * 0.2
-                step_halt_loss += halt_loss.item() / actual_steps
-            # -----------------------------------------------------------
+                # 2. 極輕量的 L2 限制：只為防止 Latent 空間爆炸 (權重從您的 0.02 大幅調降到 0.001)
+                total_loss += (diffs[i] ** 2).mean() * 0.001
+
+            # 將最終輸出的 CE 單獨算一次，確保最外層的表現是最準的 (可選，通常 step_weights 已涵蓋)
+            # 這裡建議直接使用 total_loss，把最終的 target 融入 step 的最後一步。
 
             loss_to_back = total_loss / config["accum_steps"]
             loss_to_back.backward()
             step_final_ce += final_ce.item()
+            # -----------------------------------------------------------
+
+
 
     # 3. 優化器更新與梯度裁剪
     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)
