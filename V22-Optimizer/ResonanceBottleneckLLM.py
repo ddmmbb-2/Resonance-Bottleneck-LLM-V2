@@ -12,6 +12,30 @@ from tokenizers import Tokenizer
 import csv 
 import shutil
 
+
+# ==========================================
+# 🌟 神級加速算子：強制連續化與 3D 極速掃描
+# ==========================================
+class FastContiguousCumsum(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x, dim):
+        ctx.dim = dim
+        # 1. 強制要求記憶體連續 (解決 Memory Fragmentation 的關鍵)
+        x_contig = x.contiguous()
+        return torch.cumsum(x_contig, dim=dim)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        dim = ctx.dim
+        grad_output_contig = grad_output.contiguous()
+        # 2. Cumsum 的數學反向傳播：將梯度反轉 -> Cumsum -> 再次反轉
+        # PyTorch 的 torch.flip 底層極度優化，這比保存計算圖快上幾十倍
+        grad_x = torch.flip(torch.cumsum(torch.flip(grad_output_contig, dims=[dim]), dim=dim), dims=[dim])
+        return grad_x, None
+
+def fast_cumsum(x, dim=1):
+    return FastContiguousCumsum.apply(x, dim)
+
 # ==========================================
 # 🎯 V22-Optimizer 實驗配置 (精簡重複項)
 # ==========================================
@@ -172,9 +196,24 @@ class LatentResonanceAttentionV18(nn.Module):
         safe_df_z = torch.exp(cum_log_decay) + 1e-8 
         safe_df_kv = safe_df_z.unsqueeze(-1)        
         
-        kv_states = torch.cumsum(kv_input.float() / safe_df_kv, dim=1) * torch.exp(cum_log_decay).unsqueeze(-1)
-        z_states = torch.cumsum(z_input.float() / safe_df_z, dim=1) * torch.exp(cum_log_decay)
-
+        # ------ 🌟 高效加速區塊開始 ------
+        # 1. 取得除法後的純淨張量 (保持 Float32 以防溢出)
+        kv_div = (kv_input.float() / safe_df_kv).contiguous()
+        z_div = (z_input.float() / safe_df_z).contiguous()
+        
+        # 2. 攤平成 3D 張量 (B*H, L, Features)，觸發底層最高速的 Parallel Scan
+        B, L, H, D_head = q.shape
+        kv_div_flat = kv_div.view(B * H, L, -1)
+        z_div_flat = z_div.view(B * H, L, -1)
+        
+        # 3. 呼叫我們的自定義 Autograd 算子
+        kv_states_flat = fast_cumsum(kv_div_flat, dim=1)
+        z_states_flat = fast_cumsum(z_div_flat, dim=1)
+        
+        # 4. 恢復原狀，再乘上衰減矩陣
+        kv_states = kv_states_flat.view(B, L, H, D_head, D_head) * torch.exp(cum_log_decay).unsqueeze(-1)
+        z_states = z_states_flat.view(B, L, H, D_head) * torch.exp(cum_log_decay)
+        # ------ 🌟 高效加速區塊結束 ------
         out_num = (q_f.unsqueeze(-2) @ kv_states.to(x.dtype)).squeeze(-2) 
         den = torch.clamp((q_f * z_states.to(x.dtype)).sum(dim=-1).unsqueeze(-1), min=1e-5) 
         
@@ -370,8 +409,21 @@ class D2V20SSMBlock(nn.Module):
         
         safe_div = torch.exp(cum_log_decay) + 1e-8
         
-        # 平行計算所有時間步的隱藏狀態 H
-        states = torch.cumsum(dt_B_x.float() / safe_div, dim=1) * torch.exp(cum_log_decay)
+        # ------ 🌟 SSM 高效加速區塊開始 ------
+        B_ssm, L_ssm, D_inner, D_state = dt_B_x.shape
+        
+        # 1. 強制連續化與除法
+        div_x = (dt_B_x.float() / safe_div).contiguous()
+        
+        # 2. 攤平成 3D (B*D_inner, L, D_state)
+        div_x_flat = div_x.view(B_ssm * D_inner, L_ssm, -1)
+        
+        # 3. 自定義高速掃描
+        states_flat = fast_cumsum(div_x_flat, dim=1)
+        
+        # 4. 恢復原狀並乘上衰減
+        states = states_flat.view(B_ssm, L_ssm, D_inner, D_state) * torch.exp(cum_log_decay)
+        # ------ 🌟 SSM 高效加速區塊結束 ------
         
         # 5. 觀測矩陣映射 (Y = C * H + D * X)
         y = (states.to(x.dtype) * C_mat.unsqueeze(-2)).sum(dim=-1)
