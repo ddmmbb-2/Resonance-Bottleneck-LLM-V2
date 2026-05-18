@@ -261,49 +261,69 @@ class ReasonCrossAttention(nn.Module): # 加上這行 🌟
         return self.out_proj(out)
 
 # ==========================================
-# 4.5 CA3 自返性聯想記憶模組 (Pattern Completion)
+# 4.5 仿生海馬迴模組 (DG + CA3)
 # ==========================================
-class CA3RecurrentCollateral(nn.Module):
-    def __init__(self, latent_dim, n_heads=8):
+class BrainInspiredHippocampus(nn.Module):
+    def __init__(self, latent_dim, expansion_factor=4, n_heads=8, top_k=4):
         super().__init__()
         self.n_heads = n_heads
-        self.d_head = latent_dim // n_heads
+        self.top_k = top_k  # 🌟 側向抑制：只允許最活躍的 K 個神經元存活
         
-        # CA3 的核心：自返性側支連接 (自己投影給自己)
-        self.q_proj = nn.Linear(latent_dim, latent_dim, bias=False)
-        self.k_proj = nn.Linear(latent_dim, latent_dim, bias=False)
-        self.v_proj = nn.Linear(latent_dim, latent_dim, bias=False)
-        self.out_proj = nn.Linear(latent_dim, latent_dim, bias=False)
+        # 1. DG (Dentate Gyrus) 齒狀回：模式分離 (Pattern Separation)
+        self.dg_dim = latent_dim * expansion_factor
+        self.d_head = self.dg_dim // n_heads
+        self.dg_expand = nn.Linear(latent_dim, self.dg_dim, bias=False)
+        self.dg_norm = RMSNorm(self.dg_dim)
         
-        # CA3 特有的高逆溫度參數 (Beta)
-        # 較高的 Beta 能形成強烈的吸引子動力學 (Attractor Dynamics)，迫使模糊的隱狀態收斂到清晰的概念上
+        # 2. CA3 自返性側支 (Recurrent Collaterals)
+        self.q_proj = nn.Linear(self.dg_dim, self.dg_dim, bias=False)
+        self.k_proj = nn.Linear(self.dg_dim, self.dg_dim, bias=False)
+        self.v_proj = nn.Linear(self.dg_dim, self.dg_dim, bias=False)
+        
+        # 高逆溫度 (Beta)，促使吸引子動力學生效
         self.beta = nn.Parameter(torch.ones(self.n_heads, 1, 1) * math.log(5.0))
-        self.norm = RMSNorm(self.d_head)
+        
+        # 3. CA1 輸出投射：將高維記憶壓縮回皮層維度
+        self.ca1_compress = nn.Linear(self.dg_dim, latent_dim, bias=False)
 
     def forward(self, h_query):
         B, L, D = h_query.shape
         
-        # 1. 進行自返性投影 (Recurrent Connections)
-        Q = self.q_proj(h_query).view(B, L, self.n_heads, self.d_head).transpose(1, 2)
-        K = self.k_proj(h_query).view(B, L, self.n_heads, self.d_head).transpose(1, 2)
-        V = self.v_proj(h_query).view(B, L, self.n_heads, self.d_head).transpose(1, 2)
+        # 步驟 1: DG 模式分離
+        h_dg = F.silu(self.dg_expand(h_query)) 
+        h_curr = self.dg_norm(h_dg)
         
-        # 2. QK-Norm 穩定特徵空間
-        Q = F.normalize(Q, p=2, dim=-1)
-        K = F.normalize(K, p=2, dim=-1)
-        
-        # 3. 計算內部聯想矩陣 (Auto-associative Matrix)
-        scores = (Q @ K.transpose(-2, -1)) * torch.exp(self.beta)
-        
-        # 4. 加入因果遮罩，確保時序正確性
-        mask = torch.triu(torch.ones(L, L, device=h_query.device), diagonal=1).bool()
-        scores = scores.masked_fill(mask, float('-inf'))
-        
-        # 5. 特徵動態聚合 (吸引子收斂)
-        attn = F.softmax(scores, dim=-1)
-        out = (attn @ V).transpose(1, 2).contiguous().view(B, L, -1)
-        
-        return self.out_proj(out)
+        # 步驟 2: CA3 遞迴模式補全 (迭代收斂)
+        iters = 2
+        for _ in range(iters):
+            Q = self.q_proj(h_curr).view(B, L, self.n_heads, self.d_head).transpose(1, 2)
+            K = self.k_proj(h_curr).view(B, L, self.n_heads, self.d_head).transpose(1, 2)
+            V = self.v_proj(h_curr).view(B, L, self.n_heads, self.d_head).transpose(1, 2)
+            
+            Q = F.normalize(Q, p=2, dim=-1)
+            K = F.normalize(K, p=2, dim=-1)
+            
+            scores = (Q @ K.transpose(-2, -1)) * torch.exp(self.beta)
+            
+            # 🛡️ 側向抑制 (Lateral Inhibition)：贏者全拿
+            if L > self.top_k:
+                topk_vals, _ = torch.topk(scores, self.top_k, dim=-1)
+                kth_vals = topk_vals[..., -1].unsqueeze(-1)
+                scores = scores.masked_fill(scores < kth_vals, float('-inf'))
+            
+            # 因果遮罩
+            mask = torch.triu(torch.ones(L, L, device=h_query.device), diagonal=1).bool()
+            scores = scores.masked_fill(mask, float('-inf'))
+            
+            attn = F.softmax(scores, dim=-1)
+            out = (attn @ V).transpose(1, 2).contiguous().view(B, L, self.dg_dim)
+            
+            # 殘差更新
+            h_curr = self.dg_norm(h_curr + out)
+            
+        # 步驟 3: CA1 輸出增量
+        memory_delta = self.ca1_compress(h_curr - h_dg) 
+        return memory_delta
 
 # ==========================================
 # 5. V22 推理核心：Latent Optimizer
@@ -321,14 +341,17 @@ class ResonanceOptimizerCore(nn.Module):
         self.k_norm = RMSNorm(d_model // config["n_heads"])
         
         self.cross_attn = ReasonCrossAttention(d_model, latent_dim, config["n_heads"])
-        self.ca3_collateral = CA3RecurrentCollateral(latent_dim, config["n_heads"])
-        nn.init.constant_(self.ca3_collateral.beta, math.log(1.0))
         
-        # 🌟 修正 1：將獨立的閘門改為一個聯合路由器 (Joint Router)
-        # 輸出維度為 latent_dim * 2，用來幫兩個軌道做特徵級的競爭分配
+        # 🌟 換成全新的仿生海馬迴模組
+        self.hippocampus = BrainInspiredHippocampus(
+            latent_dim, 
+            expansion_factor=4, 
+            n_heads=config["n_heads"], 
+            top_k=4
+        )
+        
         self.router = nn.Linear(latent_dim * 3, latent_dim * 2) 
         
-        # 🌟 修正 2：引入總量控制器 (Master Gate)，決定整體更新的幅度
         self.master_gate = nn.Linear(latent_dim, latent_dim)
         nn.init.constant_(self.master_gate.bias, 1.5)
         self.norm = RMSNorm(latent_dim)
@@ -343,8 +366,8 @@ class ResonanceOptimizerCore(nn.Module):
         h_latent = h_latent_init
         
         K_mem, V_mem = self.context_to_kv(x).chunk(2, dim=-1)
-        K_mem = K_mem.view(B, L, config["n_heads"], -1)  # 🌟 移除多餘的 transpose
-        V_mem = V_mem.view(B, L, config["n_heads"], -1)  # 🌟 移除多餘的 transpose
+        K_mem = K_mem.view(B, L, config["n_heads"], -1)
+        V_mem = V_mem.view(B, L, config["n_heads"], -1)
         K_mem = self.k_norm(K_mem) 
         
         intermediate_states = []
@@ -363,31 +386,26 @@ class ResonanceOptimizerCore(nn.Module):
                 
             # 1. 算出兩個軌道的原始增量
             delta_external = self.cross_attn(h_query, K_step, V_step)
-            delta_internal = self.ca3_collateral(h_query)
+            delta_internal = self.hippocampus(h_query)  # 🌟 呼叫海馬迴提取記憶
             
-            # 2. 🌟 競爭性路由 (Competitive Gating)
-            # 融合當前隱狀態與雙軌增量，丟進路由器
+            # 2. 🌟 獨立協同路由 (Synergistic Gating)
             route_features = torch.cat([h_latent, delta_external, delta_internal], dim=-1)
             route_logits = self.router(route_features) # (B, L, latent_dim * 2)
             
-            # 拆分成兩個軌道的權重，並在「軌道間」做 Softmax，確保任一特徵維度上 route_ext + route_ca3 = 1.0
-            route_logits = route_logits.view(B, L, 2, -1)
-            route_weights = F.softmax(route_logits, dim=2) 
-            weight_ext, weight_ca3 = route_weights.unbind(2) # 兩個都是 (B, L, latent_dim)
+            # 🌟 取代原本的 Softmax，改用 Sigmoid
+            route_gates = torch.sigmoid(route_logits).view(B, L, 2, -1)
+            weight_ext, weight_hipp = route_gates.unbind(2) # 兩者值域均為 [0, 1]
             
             # 3. 🌟 總量調控 (Master Scaling)
-            # 決定整體要吸收多少思考量，並將 CA3 的最大影響力做軟性限制 (例如加權)
-            # 我們不再生硬地乘以 0.3，而是讓 Softmax 決定兩者比例後，由 master_gate 控制總輸出
             master_g = torch.sigmoid(self.master_gate(h_latent))
             
-            # 最終完美的融合增量
-            delta_total = master_g * (weight_ext * delta_external + weight_ca3 * delta_internal)
+            # 最終融合增量
+            delta_total = master_g * (weight_ext * delta_external + weight_hipp * delta_internal)
             delta_total_clamped = torch.clamp(delta_total, min=-4.0, max=4.0)
             
             # 更新與標準化
             h_next = self.norm(h_latent + delta_total_clamped)
 
-            # (其餘停機與統計邏輯完全保持不變...)
             raw_diff = torch.norm(delta_total_clamped.detach(), p=2, dim=-1, keepdim=True)
             diff_norm = raw_diff / math.sqrt(config["latent_dim"])
             pred_halt_logit = self.exit_gate(h_next)
