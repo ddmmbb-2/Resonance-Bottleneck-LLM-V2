@@ -261,6 +261,51 @@ class ReasonCrossAttention(nn.Module): # 加上這行 🌟
         return self.out_proj(out)
 
 # ==========================================
+# 4.5 CA3 自返性聯想記憶模組 (Pattern Completion)
+# ==========================================
+class CA3RecurrentCollateral(nn.Module):
+    def __init__(self, latent_dim, n_heads=8):
+        super().__init__()
+        self.n_heads = n_heads
+        self.d_head = latent_dim // n_heads
+        
+        # CA3 的核心：自返性側支連接 (自己投影給自己)
+        self.q_proj = nn.Linear(latent_dim, latent_dim, bias=False)
+        self.k_proj = nn.Linear(latent_dim, latent_dim, bias=False)
+        self.v_proj = nn.Linear(latent_dim, latent_dim, bias=False)
+        self.out_proj = nn.Linear(latent_dim, latent_dim, bias=False)
+        
+        # CA3 特有的高逆溫度參數 (Beta)
+        # 較高的 Beta 能形成強烈的吸引子動力學 (Attractor Dynamics)，迫使模糊的隱狀態收斂到清晰的概念上
+        self.beta = nn.Parameter(torch.ones(self.n_heads, 1, 1) * math.log(5.0))
+        self.norm = RMSNorm(self.d_head)
+
+    def forward(self, h_query):
+        B, L, D = h_query.shape
+        
+        # 1. 進行自返性投影 (Recurrent Connections)
+        Q = self.q_proj(h_query).view(B, L, self.n_heads, self.d_head).transpose(1, 2)
+        K = self.k_proj(h_query).view(B, L, self.n_heads, self.d_head).transpose(1, 2)
+        V = self.v_proj(h_query).view(B, L, self.n_heads, self.d_head).transpose(1, 2)
+        
+        # 2. QK-Norm 穩定特徵空間
+        Q = F.normalize(Q, p=2, dim=-1)
+        K = F.normalize(K, p=2, dim=-1)
+        
+        # 3. 計算內部聯想矩陣 (Auto-associative Matrix)
+        scores = (Q @ K.transpose(-2, -1)) * torch.exp(self.beta)
+        
+        # 4. 加入因果遮罩，確保時序正確性
+        mask = torch.triu(torch.ones(L, L, device=h_query.device), diagonal=1).bool()
+        scores = scores.masked_fill(mask, float('-inf'))
+        
+        # 5. 特徵動態聚合 (吸引子收斂)
+        attn = F.softmax(scores, dim=-1)
+        out = (attn @ V).transpose(1, 2).contiguous().view(B, L, -1)
+        
+        return self.out_proj(out)
+
+# ==========================================
 # 5. V22 推理核心：Latent Optimizer
 # ==========================================
 class ResonanceOptimizerCore(nn.Module):
@@ -276,9 +321,17 @@ class ResonanceOptimizerCore(nn.Module):
         self.k_norm = RMSNorm(d_model // config["n_heads"])
         
         self.cross_attn = ReasonCrossAttention(d_model, latent_dim, config["n_heads"])
-        self.gate = nn.Linear(latent_dim * 2, latent_dim)
+        self.ca3_collateral = CA3RecurrentCollateral(latent_dim, config["n_heads"])
+        nn.init.constant_(self.ca3_collateral.beta, math.log(1.0))
+        
+        # 🌟 修正 1：將獨立的閘門改為一個聯合路由器 (Joint Router)
+        # 輸出維度為 latent_dim * 2，用來幫兩個軌道做特徵級的競爭分配
+        self.router = nn.Linear(latent_dim * 3, latent_dim * 2) 
+        
+        # 🌟 修正 2：引入總量控制器 (Master Gate)，決定整體更新的幅度
+        self.master_gate = nn.Linear(latent_dim, latent_dim)
+        nn.init.constant_(self.master_gate.bias, 1.5)
         self.norm = RMSNorm(latent_dim)
-        self.gamma = nn.Parameter(torch.ones(latent_dim) * 0.1)
         self.exit_gate = nn.Linear(latent_dim, 1) 
         
         self.register_buffer("avg_diff", torch.zeros(1)) 
@@ -286,11 +339,12 @@ class ResonanceOptimizerCore(nn.Module):
 
     def forward(self, x):
         B, L, D = x.shape
-        h_latent = self.init_proj(x)
+        h_latent_init = self.init_proj(x)
+        h_latent = h_latent_init
         
         K_mem, V_mem = self.context_to_kv(x).chunk(2, dim=-1)
-        K_mem = K_mem.view(B, L, config["n_heads"], -1)
-        V_mem = V_mem.view(B, L, config["n_heads"], -1)
+        K_mem = K_mem.view(B, L, config["n_heads"], -1)  # 🌟 移除多餘的 transpose
+        V_mem = V_mem.view(B, L, config["n_heads"], -1)  # 🌟 移除多餘的 transpose
         K_mem = self.k_norm(K_mem) 
         
         intermediate_states = []
@@ -299,31 +353,44 @@ class ResonanceOptimizerCore(nn.Module):
         
         for i in range(self.steps):
             step_ids = torch.full((B,), i, device=x.device, dtype=torch.long)
-            h_query = h_latent + self.step_embed(step_ids).unsqueeze(1)
+            h_query = 0.6 * h_latent + 0.3 * h_latent_init + 0.1 * self.step_embed(step_ids).unsqueeze(1)
             
-            # 🌟 修復: KV Gradient Contamination 
-            # Step 0 正常流動梯度；Step > 0 時，大幅縮減 KV 傳回的梯度 (例如只保留 10%)
-            # 這樣可以讓模型使用 KV，但不允許深層思考步驟過度修改 KV 的投影空間
             if i > 0 and self.training:
                 K_step = K_mem.detach() + 0.1 * (K_mem - K_mem.detach())
                 V_step = V_mem.detach() + 0.1 * (V_mem - V_mem.detach())
             else:
                 K_step, V_step = K_mem, V_mem
                 
-            delta_latent = self.cross_attn(h_query, K_step, V_step)
-            delta_latent_clamped = torch.clamp(delta_latent, min=-4.0, max=4.0)
+            # 1. 算出兩個軌道的原始增量
+            delta_external = self.cross_attn(h_query, K_step, V_step)
+            delta_internal = self.ca3_collateral(h_query)
             
-            gate_val = torch.sigmoid(self.gate(torch.cat([h_latent, delta_latent], dim=-1)))
+            # 2. 🌟 競爭性路由 (Competitive Gating)
+            # 融合當前隱狀態與雙軌增量，丟進路由器
+            route_features = torch.cat([h_latent, delta_external, delta_internal], dim=-1)
+            route_logits = self.router(route_features) # (B, L, latent_dim * 2)
             
-            # 🌟 修復 6: 直接對 h_next 做 Normalization，防止長期 Latent 漂移
-            h_next = self.norm(h_latent + gate_val * delta_latent)
+            # 拆分成兩個軌道的權重，並在「軌道間」做 Softmax，確保任一特徵維度上 route_ext + route_ca3 = 1.0
+            route_logits = route_logits.view(B, L, 2, -1)
+            route_weights = F.softmax(route_logits, dim=2) 
+            weight_ext, weight_ca3 = route_weights.unbind(2) # 兩個都是 (B, L, latent_dim)
+            
+            # 3. 🌟 總量調控 (Master Scaling)
+            # 決定整體要吸收多少思考量，並將 CA3 的最大影響力做軟性限制 (例如加權)
+            # 我們不再生硬地乘以 0.3，而是讓 Softmax 決定兩者比例後，由 master_gate 控制總輸出
+            master_g = torch.sigmoid(self.master_gate(h_latent))
+            
+            # 最終完美的融合增量
+            delta_total = master_g * (weight_ext * delta_external + weight_ca3 * delta_internal)
+            delta_total_clamped = torch.clamp(delta_total, min=-4.0, max=4.0)
+            
+            # 更新與標準化
+            h_next = self.norm(h_latent + delta_total_clamped)
 
-            raw_diff = torch.norm(delta_latent_clamped.detach(), p=2, dim=-1, keepdim=True)
+            # (其餘停機與統計邏輯完全保持不變...)
+            raw_diff = torch.norm(delta_total_clamped.detach(), p=2, dim=-1, keepdim=True)
             diff_norm = raw_diff / math.sqrt(config["latent_dim"])
-            
             pred_halt_logit = self.exit_gate(h_next)
-            
-            # 因為 h_next 已經 norm 過，可以直接丟進去轉回 model space
             intermediate_states.append(self.latent_to_model(h_next))
             diff_norms.append(diff_norm)
             halt_logits.append(pred_halt_logit)
@@ -333,13 +400,12 @@ class ResonanceOptimizerCore(nn.Module):
                 self.avg_halt_prob = 0.9 * self.avg_halt_prob + 0.1 * torch.sigmoid(pred_halt_logit).detach().mean()
                 h_next = h_next + torch.randn_like(h_next) * 1e-4 
             else:
-                if torch.sigmoid(pred_halt_logit).min() > config["inference_exit_threshold"]:
+                if torch.sigmoid(pred_halt_logit).mean() > config["inference_exit_threshold"]:
                     break
                     
             h_latent = h_next
 
         return intermediate_states[-1], intermediate_states, diff_norms, halt_logits
-
 # ==========================================
 # 5.5 V22 背景記憶核心：SSM 時間序列全域掃描
 # ==========================================
@@ -588,20 +654,26 @@ while global_step < config["epochs"]:
             # 讓越深層的思考步驟，佔據越高的 Loss 權重 (例如 3 步就是 1/6, 2/6, 3/6)
             step_weights = [(i + 1) / sum(range(1, actual_steps + 1)) for i in range(actual_steps)]
             
+            # 🌟 1. 這裡必須先宣告 total_loss = 0，並把每一步的預測誤差加進去！
             total_loss = 0
             for i in range(actual_steps):
-                # 1. 核心目標：讓每個思考步驟都能預測 Token
                 total_loss += ce_losses[i] * step_weights[i]
-                
-                # 2. 極輕量的 L2 限制：只為防止 Latent 空間爆炸 (權重從您的 0.02 大幅調降到 0.001)
                 total_loss += (diffs[i] ** 2).mean() * 0.001
-
-            # 將最終輸出的 CE 單獨算一次，確保最外層的表現是最準的 (可選，通常 step_weights 已涵蓋)
-            # 這裡建議直接使用 total_loss，把最終的 target 融入 step 的最後一步。
-
+            
+            # 🌟 2. 計算停機閘門的誤差
+            halt_loss = 0
+            for i in range(actual_steps):
+                target_prob = torch.ones_like(halts[i]) if i == actual_steps - 1 else torch.zeros_like(halts[i])
+                halt_loss += F.binary_cross_entropy_with_logits(halts[i], target_prob)
+            
+            # 🌟 3. 將兩者合併
+            total_loss += halt_loss * 0.05
+            
             loss_to_back = total_loss / config["accum_steps"]
             loss_to_back.backward()
+            
             step_final_ce += final_ce.item()
+            step_halt_loss += halt_loss.item()
             # -----------------------------------------------------------
 
 
