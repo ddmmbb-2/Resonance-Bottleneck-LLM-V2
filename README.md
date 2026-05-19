@@ -1,95 +1,271 @@
+# 🚀 Resonance-Bottleneck-LLM (V23-NeuroOptimizer)
 
-
-# 🚀 Resonance-Bottleneck-LLM (V22-Optimizer)
-
-> *Beyond attention: The model is no longer just a predictor, but an iterative optimizer of its own latent logic.*
+> *Not just predicting tokens — but recursively refining latent cognition through resonance, memory, and self-optimization.*
 
 ## 🧠 Overview | 概述
 
-**Resonance-Bottleneck-LLM (V22-Optimizer)** 標誌著架構設計的重大轉向。我們不再僅僅依賴增加層數來獲取智能，而是將模型視為一個**遞迴優化系統**。在 V22 中，我們正式引入了「三明治夾心架構 (Sandwich Architecture)」，融合了高精度注意力、SSM 全域背景掃描，以及最核心的 **Latent Optimizer Core**。
+**Resonance-Bottleneck-LLM (V23-NeuroOptimizer)** 代表整體架構正式從「序列建模器」進化為一種 **神經動力學推理系統 (Neural Dynamical Reasoning System)**。
 
-透過 V22 的**信用分配機制 (Credit Assignment)** 與 **QK-Norm 交叉注意力**，模型現在不僅「知道何時停止」，更學會了「如何高效地修正自己的錯誤」。
+V23 不再把 Transformer 視為單純的深層堆疊，而是將模型拆解為三種互補的認知功能：
 
----
+* **Resonance Attention**：高精度局部特徵共振。
+* **SSM Global Memory**：長距離時間序列背景掃描。
+* **Latent Neuro-Optimizer**：在潛空間中進行遞迴推理與自我修正。
 
-## ✨ Key Features | 核心特色
+此次版本最大的突破，在於正式引入：
 
-### 🔹 Hybrid Sandwich Architecture (三明治夾心架構)
+* 🧠 **仿生海馬迴記憶模組 (DG + CA3)**
+* ⚡ **FlashAttention-2 加速交叉推理**
+* 🔄 **多步潛空間自我優化**
+* 🚦 **自適應停止推理機制**
 
-V22 徹底重構了層級堆疊策略，將三種不同性質的運算模組交織在一起：
-
-* **Precision Retrieval (Attention):** 負責精確的短程特徵檢索。
-* **Global Context (SSM):** 透過平行掃描 (Parallel Scan) 捕捉全域背景記憶，取代了過時的局部卷積。
-* **Logic Optimization (Optimizer Core):** 作為動態工作區，對潛空間特徵進行深度邏輯提煉。
-
-### 🔹 SSM Global Scan (時間序列全域掃描)
-
-引入了基於 `A_log` 離散化參數的 SSM 模組。這讓模型具備了類似 Mamba 的長距離依賴處理能力，同時透過我們自研的穩定 Cumsum 技巧，在不依賴自定義 CUDA Kernel 的情況下實現了高效的全域掃描。
-
-### 🔹 Latent Optimizer Core (潛空間優化核心)
-
-推理核心現在運作起來更像是一個最小化的 Adam 優化器：
-
-* **QK-Norm Cross Attention:** 引入餘弦相似度注意力與**可學習溫度參數**，徹底杜絕熵崩潰 (Entropy Collapse)。
-* **Gradient Contamination Fix:** 透過梯度縮放（僅保留 10% 梯度傳回 KV），防止深層思考過度干擾基礎表徵空間。
-* **Direct Latent Normalization:** 在每一步思考後直接進行 RMSNorm，防止潛特徵在多次迭代中產生漂移。
-
-### 🔹 Step-wise Credit Assignment (階梯式信用分配機制)
-
-我們捨棄了固定的懲罰，改用動態的表現評估：
-
-* **Monotonicity Constraint (單調遞減約束):** 強迫模型下一步的表現必須優於上一步。
-* **Margin-based Penalty:** 如果第 N 步思考導致 Loss 上升，模型會受到嚴厲懲罰，迫使優化器學會撤回無效的推理軌跡。
-* **Incremental Weighting:** 給予後續思考步驟更高的權重 (0.2 -> 0.3 -> 0.5)，確保深度推理產出的 Logits 具有最高品質。
+模型開始具備類似「工作記憶 + 長期聯想 + 內部修正」的混合推理特性，而不再只是單向傳遞資訊。
 
 ---
 
-## 🏗️ Architecture | 模型架構 (V22-Optimizer Variant)
+# ✨ Key Features | 核心特色
 
-V22 採用非對稱堆疊，邏輯分佈如下：
+## 🔹 Neuro-Sandwich Architecture (神經三明治架構)
 
-| Layer Index | Module Type | Functional Role |
-| --- | --- | --- |
-| **0, 2, 4, 6, 8, 10** | **Resonance Attention** | 高精度特徵檢索與共振門控 |
-| **1, 5, 9** | **D2V20 SSM Block** | 全域時間序列背景掃描 (Global Context) |
-| **3, 7, 11** | **Optimizer Core** ⭐ | **遞迴優化工作區 (Think Steps: 3)** |
+V23 採用非對稱混合堆疊架構，將不同認知功能交錯排列：
 
----
+* **Resonance Attention**
+  精確檢索局部語義與短程依賴。
 
-## ⚙️ Training Setup | 訓練設定 (V22)
+* **SSM Global Scan**
+  使用平行時間掃描建立全域背景記憶。
 
-* **Model Dimensions**: 512 d_model / 256 latent_dim.
-* **Thinking Steps**: 3 (於第 3, 7, 11 層觸發)。
-* **Optimization**: AdamW + Autocast (BFloat16)。
-* **Loss Mechanics**: 結合了 Step-wise CE, Margin Loss, 以及 Halt Binary Cross Entropy。
-* **Inference Exit**: `threshold = 0.85` (信心達標即停)。
+* **Latent Neuro-Optimizer**
+  在潛空間中反覆修正與強化語意狀態。
 
----
+這種設計使模型同時具備：
 
-## 📊 Design Motivation | 設計動機
+* 局部精度
+* 全域記憶
+* 深度推理能力
 
-V22-Optimizer 的核心哲學是 **「特徵的演化而非堆疊」**：
-
-> **傳統 LLM 像是一條直線流水線，每一層只能處理一次資訊；V22 則像是一個實驗室，在 Optimizer Core 中，模型被允許針對當前語境進行三次「自我修正」。透過信用分配機制，我們確保了每一次的修正都是有意義的，讓 12 層的模型展現出遠超其參數規模的邏輯深度。**
+而不需要極端增加層數。
 
 ---
 
-## 🚧 Status | 開發狀態
+## 🔹 Brain-Inspired Hippocampus (仿生海馬迴模組)
 
-* [x] **V20 SSM**: 全域掃描取代局部卷積。
-* [x] **V21 QK-Norm**: 解決交叉注意力的穩定性問題。
-* [x] **V22 Optimizer Core**: 實裝信用分配與梯度隔離。
-* [x] **Adaptive Exit**: 基於特徵變化量的動態停機邏輯。
-* [ ] Phase 4: 多模態共振與跨樣本記憶槽。
+V23 新增了靈感來自生物海馬迴的記憶系統：
+
+### Dentate Gyrus (DG)
+
+先將潛特徵高維展開，形成稀疏記憶表徵：
+
+* 強化模式分離 (Pattern Separation)
+* 降低特徵混疊
+* 提升長程推理穩定性
+
+### CA3 Associative Recall
+
+透過 Top-K 聯想注意力：
+
+* 建立類似聯想記憶的動態檢索
+* 模擬內容尋址記憶 (Content Addressable Memory)
+* 強化多步推理中的內部一致性
+
+這讓模型開始具備「回想」而非僅僅「注意」的能力。
 
 ---
 
-## 📜 License
+## 🔹 FlashAttention-2 Reasoning Core
+
+V23 的推理核心改用：
+
+### QK-Norm Cosine Attention
+
+透過：
+
+* RMSNorm
+* L2 Normalization
+* Learnable Temperature
+
+建立穩定的餘弦相似度推理空間。
+
+有效解決：
+
+* Entropy Collapse
+* Attention Saturation
+* 深層推理發散
+
+問題。
+
+### FlashAttention-2 Dynamic Fusion
+
+直接使用 PyTorch 原生：
+
+`scaled_dot_product_attention`
+
+自動觸發：
+
+* FlashAttention-2
+* CUDA Kernel Fusion
+* Tensor Core 加速
+
+在不依賴自定義 CUDA 的情況下，仍能達成極高吞吐效率。
+
+---
+
+## 🔹 Latent Neuro-Optimization (潛空間神經優化)
+
+V23 的核心思想：
+
+> 模型不只是 forward 一次，而是在 latent workspace 中進行多輪「自我修正」。
+
+每一步推理都包含：
+
+1. 外部上下文檢索
+2. 海馬迴聯想記憶
+3. 動態路由融合
+4. Master Gate 控制更新幅度
+5. RMSNorm 穩定化
+
+形成類似：
+
+* iterative refinement
+* recurrent reasoning
+* latent optimization
+
+的混合神經動力學。
+
+---
+
+## 🔹 Adaptive Halting System (自適應停機機制)
+
+模型不再固定思考步數。
+
+V23 會根據：
+
+* latent change magnitude
+* halt probability
+* feature convergence
+
+動態決定是否提前停止推理。
+
+這讓模型具備：
+
+* 更高推理效率
+* 更低無效計算
+* 更穩定的深度思考
+
+特性。
+
+---
+
+## 🔹 Stable Global SSM Scan (全域穩定掃描)
+
+V23 延續並強化 V20 的 SSM 設計：
+
+* 離散化 `A_log` 動態衰減
+* 平行 Prefix Scan
+* 高速 Cumsum 重排優化
+* 完全 GPU Friendly
+
+同時避免：
+
+* kernel explosion
+* custom CUDA dependency
+* unstable recurrent accumulation
+
+問題。
+
+---
+
+# 🏗️ Architecture | 模型架構 (V23-NeuroOptimizer)
+
+| Layer Index           | Module Type                | Functional Role |
+| --------------------- | -------------------------- | --------------- |
+| **0, 2, 4, 6, 8, 10** | **Resonance Attention**    | 高精度局部語義檢索與共振門控  |
+| **1, 5, 9**           | **D2V20 SSM Block**        | 長距離背景記憶與時間序列掃描  |
+| **3, 7, 11**          | **Neuro-Optimizer Core** ⭐ | 潛空間多步遞迴推理與記憶聯想  |
+
+---
+
+# ⚙️ Training Setup | 訓練設定
+
+* **Model Dimensions**
+  512 d_model / 256 latent_dim
+
+* **Attention Heads**
+  8 heads
+
+* **Thinking Steps**
+  3 recursive optimization steps
+
+* **Optimizer**
+  AdamW + BFloat16 Autocast
+
+* **Loss Design**
+
+  * Multi-Step Cross Entropy
+  * Diff Regularization
+  * Halt BCE Supervision
+
+* **Inference Exit Threshold**
+
+  `0.85`
+
+* **Training Strategy**
+
+  * Gradient Isolation
+  * Step-wise Latent Refinement
+  * Adaptive Recursive Reasoning
+
+---
+
+# 📊 Design Philosophy | 設計哲學
+
+V23 的核心哲學是：
+
+> **「智能不是來自更深的堆疊，而是來自可反覆修正的潛空間動力學。」**
+
+傳統 Transformer：
+
+* 每層只處理一次資訊
+* 推理路徑固定
+* 無法真正反思
+
+而 V23：
+
+* 允許 latent state 多次修正
+* 透過海馬迴進行聯想回憶
+* 透過動態路由重新組織特徵
+* 透過 halt gate 自主停止思考
+
+使小模型也能展現超越參數規模的推理深度。
+
+---
+
+# 🚧 Status | 開發狀態
+
+* [x] V20 SSM Global Scan
+* [x] V21 QK-Norm Stabilization
+* [x] V22 Latent Optimizer
+* [x] V23 Brain-Inspired Hippocampus
+* [x] FlashAttention-2 Dynamic Fusion
+* [x] Adaptive Halting System
+* [ ] Phase 4: Persistent Cross-Sample Memory
+* [ ] Phase 5: Multimodal Resonance Workspace
+
+---
+
+# 📜 License
 
 MIT License
 
 ---
 
-## ⭐ Support the Project
+# ⭐ Support the Project
 
-如果您對「潛空間優化器」與「三明治 SSM 架構」感興趣，請給我們一個 ⭐！
+如果您對：
+
+* 潛空間遞迴推理
+* 神經動力學架構
+* 仿生海馬迴記憶
+* SSM + Attention 混合模型
+
+感興趣，歡迎給專案一個 ⭐！
