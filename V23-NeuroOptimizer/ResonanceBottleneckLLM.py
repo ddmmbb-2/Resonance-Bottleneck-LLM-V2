@@ -1,3 +1,5 @@
+import torch
+import torch.nn as nn
 import os
 import math
 import numpy as np
@@ -9,6 +11,9 @@ from tqdm import tqdm
 from tokenizers import Tokenizer
 import csv 
 import shutil
+
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
 
 # ==========================================
 # 🎯 V22-Optimizer 實驗配置
@@ -47,8 +52,14 @@ print(f"🔥 V22 Latent Optimizer 修復加速版啟動中 | 設備: {device}")
 if not os.path.exists(config["bin_data"]):
     raise FileNotFoundError(f"❌ 找不到 {config['bin_data']}！請確認檔案位置。")
 
+# 🌟 在這裡進行 Tokenizer 讀取與 config 動態覆寫，確保後續模型初始化的詞表大小絕對一致
 tokenizer = Tokenizer.from_file(config["vocab_name"])
-vocab_size = tokenizer.get_vocab_size() 
+config["vocab_size"] = tokenizer.get_vocab_size() 
+vocab_size = config["vocab_size"]
+
+print(f"🔥 V22 Latent Optimizer | 設備: {device} | 詞表大小: {vocab_size}")
+
+# 確保詞表大小讀取完畢後，再映射二進位資料
 data = np.memmap(config["bin_data"], dtype=np.uint16, mode='r')
 
 def get_batch():
@@ -59,7 +70,7 @@ def get_batch():
         x_list.append(torch.from_numpy(data[i:i+config["block_size"]].astype(np.int64)))
         y_list.append(torch.from_numpy(data[i+1:i+config["block_size"]+1].astype(np.int64)))
         
-    # 🌟 使用 pin_memory()，讓 CPU 將資料放在鎖定的記憶體區塊，GPU 取用時直接走 DMA，免經 CPU 處理
+    # 🌟 使用 pin_memory() 加速 DMA 傳輸
     x = torch.stack(x_list).pin_memory().to(device, non_blocking=True)
     y = torch.stack(y_list).pin_memory().to(device, non_blocking=True)
     return x, y
@@ -228,7 +239,7 @@ class ReasonCrossAttention(nn.Module):
         return self.out_proj(out)
 
 # ==========================================
-# 4.5 仿生海馬迴模組 (DG + CA3 高速廣播版)
+# 4.5 仿生海馬迴模組 (DG + CA3 高速廣播版) - 已修復 Causal Mask 與 Top-K 邏輯
 # ==========================================
 class BrainInspiredHippocampus(nn.Module):
     def __init__(self, latent_dim, expansion_factor=4, n_heads=8, top_k=4):
@@ -254,9 +265,8 @@ class BrainInspiredHippocampus(nn.Module):
         h_dg = F.silu(self.dg_expand(h_query)) 
         h_curr = self.dg_norm(h_dg)
 
-        # 廣播矩陣遮罩防止記憶體重複申請開銷
-        grid = torch.arange(L, device=h_query.device)
-        mask = grid.unsqueeze(0) > grid.unsqueeze(1) 
+        # 🌟 修復 1：改用標準嚴謹的 Causal Mask，True 代表需要被遮蔽的未來位置
+        mask = ~torch.tril(torch.ones(L, L, dtype=torch.bool, device=h_query.device))
 
         iters = 1
         for _ in range(iters):
@@ -268,21 +278,28 @@ class BrainInspiredHippocampus(nn.Module):
             K = F.normalize(K, p=2, dim=-1)
             
             scores = (Q @ K.transpose(-2, -1)) * torch.exp(self.beta)
+            
+            # 先套用 Causal Mask，阻斷未來資訊
             scores = scores.masked_fill(mask, float('-inf'))
             
+            # 🌟 修復 2：安全的 Top-K 邏輯，避免 -inf 干擾閾值計算
             if L > self.top_k:
-                topk_vals, _ = torch.topk(scores, self.top_k, dim=-1)
+                safe_scores = scores.masked_fill(mask, -1e4)
+                
+                topk_vals, _ = torch.topk(safe_scores, self.top_k, dim=-1)
                 kth_vals = topk_vals[..., -1].unsqueeze(-1)
-                scores = scores.masked_fill(scores < kth_vals, float('-inf'))
+                
+                sparse_mask = (scores < kth_vals) & (~mask)
+                scores = scores.masked_fill(sparse_mask, float('-inf'))
             
             attn = F.softmax(scores, dim=-1)
             out = (attn @ V).transpose(1, 2).contiguous().view(B, L, self.dg_dim)
             h_curr = self.dg_norm(h_curr + out)
             
-        return self.ca1_compress(h_curr - h_dg) 
+        return self.ca1_compress(h_curr - h_dg)
 
 # ==========================================
-# 5. V22 推理核心：Latent Optimizer
+# 5. V22 推理核心：Latent Optimizer (已修復記憶體與噪聲邏輯)
 # ==========================================
 class ResonanceOptimizerCore(nn.Module):
     def __init__(self, d_model, latent_dim, think_steps=3):
@@ -308,7 +325,8 @@ class ResonanceOptimizerCore(nn.Module):
         self.register_buffer("avg_diff", torch.zeros(1)) 
         self.register_buffer("avg_halt_prob", torch.zeros(1))
 
-    def forward(self, x):
+    # 🌟 修復 1：引入 return_all_steps 參數來控制記憶體開銷
+    def forward(self, x, return_all_steps=True):
         B, L, D = x.shape
         h_latent_init = self.init_proj(x)
         h_latent = h_latent_init
@@ -321,11 +339,13 @@ class ResonanceOptimizerCore(nn.Module):
         intermediate_states = []
         diff_norms = []
         halt_logits = []
+        last_intermediate = None # 用於單步追蹤，避免 OOM
         
         for i in range(self.steps):
             step_ids = torch.full((B,), i, device=x.device, dtype=torch.long)
             h_query = 0.6 * h_latent + 0.3 * h_latent_init + 0.1 * self.step_embed(step_ids).unsqueeze(1)
             
+            # 這裡的 Stop-gradient 技巧保留，有助於穩定 KV 緩存的更新方向
             if i > 0 and self.training:
                 K_step = K_mem.detach() + 0.1 * (K_mem - K_mem.detach())
                 V_step = V_mem.detach() + 0.1 * (V_mem - V_mem.detach())
@@ -350,22 +370,33 @@ class ResonanceOptimizerCore(nn.Module):
             raw_diff = torch.norm(delta_total_clamped.detach(), p=2, dim=-1, keepdim=True)
             diff_norm = raw_diff / math.sqrt(config["latent_dim"])
             pred_halt_logit = self.exit_gate(h_next)
-            intermediate_states.append(self.latent_to_model(h_next))
+            
+            current_intermediate = self.latent_to_model(h_next)
+            last_intermediate = current_intermediate
+            
+            if return_all_steps:
+                intermediate_states.append(current_intermediate)
+                
             diff_norms.append(diff_norm)
             halt_logits.append(pred_halt_logit)
             
             if self.training:
                 self.avg_diff = 0.9 * self.avg_diff + 0.1 * diff_norm.mean()
                 self.avg_halt_prob = 0.9 * self.avg_halt_prob + 0.1 * torch.sigmoid(pred_halt_logit).detach().mean()
-                h_next = h_next + torch.randn_like(h_next) * 1e-4 
+                
+                # 隨著網路收斂 (avg_diff 下降)，注入的噪聲會等比例減少，防止後期震盪
+                adaptive_noise_scale = 1e-4 * torch.clamp(self.avg_diff, max=1.0)
+                h_next = h_next + torch.randn_like(h_next) * adaptive_noise_scale 
             else:
                 if torch.sigmoid(pred_halt_logit).mean() > config["inference_exit_threshold"]:
                     break
                     
             h_latent = h_next
 
-        return intermediate_states[-1], intermediate_states, diff_norms, halt_logits
-
+        if return_all_steps:
+            return last_intermediate, intermediate_states, diff_norms, halt_logits
+        else:
+            return last_intermediate, [last_intermediate], diff_norms, halt_logits
 # ==========================================
 # 5.5 V22 背景記憶核心：SSM 時間序列全域掃描
 # ==========================================
@@ -412,20 +443,16 @@ class D2V20SSMBlock(nn.Module):
         A = -torch.exp(self.A_log.float()) 
         log_decay = dt.unsqueeze(-1) * A   
         
-        # 🌟 隱藏地雷修復：這個衰減矩陣的 cumsum 也是對 dim=1(L) 做，必須一起連續化！
         log_decay_perm = log_decay.permute(0, 2, 3, 1).contiguous()
         cum_log_decay = torch.cumsum(log_decay_perm, dim=-1).permute(0, 3, 1, 2)
         
         dt_B_x = dt.unsqueeze(-1) * B_mat.unsqueeze(-2) * x_conv.unsqueeze(-1)
-        safe_div = torch.exp(cum_log_decay) + 1e-8
+        safe_div = torch.exp(cum_log_decay) + 1e-5
         
-        # ------ 🌟 SSM 高效加速區塊開始 ------
         div_x = (dt_B_x.float() / safe_div)
         
-        # 這裡你的設計完全正確！完美的 L 維度置底
         div_x_perm = div_x.permute(0, 2, 3, 1).contiguous()
         
-        # 雙軌並行掃描，全部走最後一維連續記憶體
         states = torch.cumsum(div_x_perm, dim=-1).permute(0, 3, 1, 2) * torch.exp(cum_log_decay)
         # ------ 🌟 SSM 高效加速區塊結束 ------
         
@@ -557,7 +584,9 @@ while global_step < config["epochs"]:
             ce_losses = [F.cross_entropy(logits.view(-1, vocab_size), target) for logits in step_logits]
             
             actual_steps = len(ce_losses)
-            step_weights = [(i + 1) / sum(range(1, actual_steps + 1)) for i in range(actual_steps)]
+            gamma = 0.8  # 折扣因子
+            raw_weights = [gamma ** (actual_steps - 1 - i) for i in range(actual_steps)]
+            step_weights = [w / sum(raw_weights) for w in raw_weights]
             
             total_loss = 0
             for i in range(actual_steps):
