@@ -20,9 +20,9 @@ config = {
     "latent_dim": 256,
     "dropout": 0.1,
     "max_seq_len": 512,
-    "batch_size": 8,
+    "batch_size": 4,
     "block_size": 256,
-    "accum_steps": 4,
+    "accum_steps": 8,
     "think_steps": 3,
     "lr": 3e-4,              
     "min_lr": 3e-5,          
@@ -55,12 +55,13 @@ def get_batch():
     ix = torch.randint(len(data) - config["block_size"], (config["batch_size"],))
     x_list, y_list = [], []
     for i in ix:
-        # 保持原本型態讀取，減少 CPU 做重型轉型的負載
-        x_list.append(torch.from_numpy(data[i:i+config["block_size"]].astype(np.int32)))
-        y_list.append(torch.from_numpy(data[i+1:i+config["block_size"]+1].astype(np.int32)))
+        # 🌟 直接轉 np.int64，避開二次轉換
+        x_list.append(torch.from_numpy(data[i:i+config["block_size"]].astype(np.int64)))
+        y_list.append(torch.from_numpy(data[i+1:i+config["block_size"]+1].astype(np.int64)))
         
-    x = torch.stack(x_list).long().to(device, non_blocking=True)
-    y = torch.stack(y_list).long().to(device, non_blocking=True)
+    # 🌟 使用 pin_memory()，讓 CPU 將資料放在鎖定的記憶體區塊，GPU 取用時直接走 DMA，免經 CPU 處理
+    x = torch.stack(x_list).pin_memory().to(device, non_blocking=True)
+    y = torch.stack(y_list).pin_memory().to(device, non_blocking=True)
     return x, y
 
 if not os.path.exists(config["log_csv"]):
