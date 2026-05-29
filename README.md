@@ -1,21 +1,22 @@
-# 🚀 Resonance-Bottleneck-LLM (V24-InfiniteResonance)
+# 🚀 Resonance-Bottleneck-LLM (V24.5-InfiniteResonance)
 
-> *Not just predicting tokens — but recursively refining latent cognition and dynamically condensing infinite context through resonance.*
+> *Not just predicting tokens — but recursively refining latent cognition, aligning thought trajectories, and dynamically condensing infinite context through resonance.*
 
 ## 🧠 Overview | 概述
 
-**Resonance-Bottleneck-LLM (V24-InfiniteResonance)** 代表整體架構從「單次長序列建模器」正式進化為一種 **具備無限記憶潛力的分塊遞推系統 (Chunk-wise Recurrent Reasoning System)**。
+**Resonance-Bottleneck-LLM (V24.5-InfiniteResonance)** 代表整體架構從「單次長序列建模器」正式進化為一種 **具備無限記憶潛力的分塊遞推系統 (Chunk-wise Recurrent Reasoning System)**。
 
-V24 延續了 V23 的神經動力學推理核心，並強勢引入了 **Phase 3: Micro-Chunking & Causal Keyframe Cache (微型分塊與因果關鍵影格緩存)** 機制。模型不再受限於傳統的注意力視窗長度，而是將過去的記憶動態濃縮並無縫注入到當前的推理步驟中。
+V24 奠定了 Causal Keyframe Cache (因果關鍵影格緩存) 的基礎，而 **V24.5 則是在「訓練穩定度」與「計算效能」上進行了深度的極致優化**。模型不再受限於傳統的注意力視窗長度，而是將過去的記憶動態濃縮並無縫注入到當前的推理步驟中，同時在純潛在空間 (Pure Latent Space) 中完成所有複雜邏輯推演。
 
-此次版本最大的突破，在於正式引入：
+此次 V24.5 版本的核心進化包含：
 
-* 🧩 **Micro-Chunking 遞推處理**
+* 🧩 **Micro-Chunking 遞推與彈性吞吐 (解鎖 CPU 瓶頸)**
 * 🌌 **Super Token 動態濃縮與重要性過濾**
-* ⏱️ **絕對位置感知 (RoPE-Aware) 外部緩存**
-* ⚡ **跨 Chunk 快取注入 (FlashAttention-2 加速)**
+* ⚡ **Samba-Style 混合層疊架構 (1 Attn : 2 SSM : 1 Opt)**
+* 🎯 **Latent Alignment Loss (潛在對齊目標與純潛在優化)**
+* 🛡️ **Dynamic Diff-based LR Scaling (自適應動態防禦機制)**
 
-模型現在具備了「工作記憶 + 長期聯想 + 內部修正 + **跨時空外部記憶**」的全方位認知特性。
+模型現在具備了「工作記憶 + 長期聯想 + 內部修正 + **跨時空外部記憶**」的全方位認知特性，且能在有限的消費級顯卡 (如 RTX 3060 12GB) 上展現驚人的運算能效。
 
 ---
 
@@ -23,87 +24,51 @@ V24 延續了 V23 的神經動力學推理核心，並強勢引入了 **Phase 3:
 
 ## 🔹 Causal Keyframe Cache & Super Tokens (因果關鍵影格與超級符號)
 
-V24 打破了上下文長度限制，引入了全新的動態記憶濃縮機制：
+打破上下文長度限制，引入全新的動態記憶濃縮機制：
 
-* **Micro-Chunking**
-將長文本切分為微小區塊 (如 `chunk_size=64`) 依序處理，極大化降低 VRAM 消耗。
+* **彈性 Micro-Chunking (空間換取時間)**
+支援動態調整區塊大小 (如 `chunk_size=192/384`)，大幅減少 CPU 發布 Kernel 指令的開銷，讓 GPU 算力發揮至 100%。
 * **Dynamic Super Token Condensation**
-根據 Neuro-Optimizer 的「思考深度 (Halt Probability)」，動態計算 Chunk 內每個 Token 的重要性。只有當整體重要性超過閾值 (如 `> 0.3`) 時，才會將該 Chunk 融合成一個高密度的 **Super Token**。
+根據 Neuro-Optimizer 的「思考深度 (Halt Probability)」，動態計算 Chunk 內每個 Token 的重要性。只有當整體重要性超過閾值時，才會將該 Chunk 融合成一個高密度的 **Super Token**。
 * **Strict Causality & RoPE Alignment**
 外部記憶嚴格記錄 `end_pos` 並結合 RoPE (旋轉位置編碼)，確保模型在檢索歷史 Super Tokens 時擁有完美的絕對位置感知與因果隔離，絕不洩漏未來資訊。
 
----
+## 🔹 Samba-Style Hybrid Architecture (Samba 式混合層疊架構)
 
-## 🔹 Neuro-Sandwich Architecture (神經三明治架構)
+V24.5 放棄了對稱式設計，改採更具硬體友善度與語義捕捉力的特定層級排列 (每 4 層為一個大週期)：
 
-V24 採用非對稱混合堆疊架構，並將 **External Cache** 貫穿其中：
-
-* **Resonance Attention + Cache Injection**
-精確檢索局部語義，並透過門控機制 (Cache Gate) 動態融合來自歷史 Chunk 的 Super Tokens。
-* **SSM Global Scan**
-使用平行時間掃描建立當前 Chunk 內的全域背景記憶。
-* **Latent Neuro-Optimizer + Cross-Chunk Memory**
-在潛空間中反覆修正狀態，其內部的交叉注意力 (Cross Attention) 現在能直接看見並檢索歷史的 Super Tokens。
-
----
+* **Resonance Attention (檢索層)**：精確檢索局部語義，並透過門控動態融合歷史 Super Tokens。
+* **雙重 SSM Global Scan (背景層)**：連續兩層平行時間掃描，建立強大且線性的當前 Chunk 全域背景記憶。
+* **Neuro-Optimizer (推理層)**：在潛空間中反覆修正狀態，整合並收斂前面各層的資訊。
 
 ## 🔹 Brain-Inspired Hippocampus (仿生海馬迴模組)
 
-延續 V23 的記憶系統：
+延續並穩定了 V23 的記憶系統：
 
-### Dentate Gyrus (DG)
+* **Dentate Gyrus (DG) 高維稀疏化**：先將潛特徵高維展開，形成稀疏記憶表徵，降低特徵混疊。
+* **CA3 Associative Recall**：透過 Top-K 聯想注意力建立類似聯想記憶的動態檢索，強化多步推理中的內部一致性。
 
-先將潛特徵高維展開，形成稀疏記憶表徵，強化模式分離 (Pattern Separation)，降低特徵混疊。
+## 🔹 Latent Neuro-Optimization & Alignment (純潛空間優化與對齊)
 
-### CA3 Associative Recall
+V24.5 最大的效能與收斂突破：
 
-透過 Top-K 聯想注意力建立類似聯想記憶的動態檢索，強化多步推理中的內部一致性。這讓模型具備「回想」而非僅僅「注意」的能力。
+* **Pure Latent Workspace (純潛在空間運算)**：模型在 `think_steps` 中**只在 256 維的潛在空間中進行迭代**，只有最後一步才會投射回主模型維度。這極大地節省了 VRAM 與矩陣乘法的開銷。
+* **Latent Alignment Loss (潛在對齊損失)**：訓練時引入權重遞增的對齊目標，強迫模型前 $N-1$ 步的思考軌跡逐漸對齊最後一步的潛在表達，確保思考過程不會發散。
 
----
+## 🔹 Dynamic Defenses (自適應防禦與停機系統)
 
-## 🔹 FlashAttention-2 Reasoning Core
-
-推理核心使用：
-
-### QK-Norm Cosine Attention
-
-透過 RMSNorm、L2 Normalization 與 Learnable Temperature，建立穩定的餘弦相似度推理空間，解決 Entropy Collapse 與 Attention Saturation 問題。
-
-### FlashAttention-2 Dynamic Fusion
-
-內外部記憶的融合直接使用 PyTorch 原生 `scaled_dot_product_attention`，自動觸發 CUDA Kernel Fusion 與 Tensor Core 加速，在無損因果性的前提下達成極高吞吐效率。
+* **Diff-based LR Scaling (動態學習率防護網)**：內建即時監控神經網路位移 (Diff) 的機制。當模型遇到複雜邏輯導致位移暴衝時，會自動縮放 `lr_scale` 保護梯度；當思考穩定時，則自動恢復滿血學習率。
+* **Adaptive Halting System**：讓「想得越深」的資訊被記憶得越牢，賦予模型「知道何時該停止思考」的能力。
 
 ---
 
-## 🔹 Latent Neuro-Optimization (潛空間神經優化)
-
-V24 的核心思想：
-
-> 模型不只是 forward 一次，而是在 latent workspace 中進行多輪「自我修正」，且每次修正都能調用跨時空的歷史記憶。
-
-每一步推理都包含：
-
-1. 外部上下文與歷史快取檢索 (External KV Cross-Attention)
-2. 海馬迴聯想記憶
-3. 動態路由融合
-4. Master Gate 控制更新幅度
-5. RMSNorm 穩定化
-
----
-
-## 🔹 Adaptive Halting System (自適應停機機制)
-
-模型會根據 latent change magnitude、halt probability 與 feature convergence，動態決定是否提前停止推理。這個 Halt Probability 在 V24 中被進一步昇華為**記憶濃縮的權重指標 (Importance Score)**，讓「想得越深」的資訊被記憶得越牢。
-
----
-
-# 🏗️ Architecture | 模型架構 (V24-InfiniteResonance)
+# 🏗️ Architecture | 模型架構 (V24.5-InfiniteResonance)
 
 | Layer Index | Module Type | Functional Role |
 | --- | --- | --- |
-| **0, 2, 4, 6, 8, 10** | **Resonance Attention** | 高精度局部語義檢索、共振門控與 **外部快取融合** |
-| **1, 5, 9** | **D2V20 SSM Block** | 當前 Chunk 內的背景記憶與時間序列掃描 |
-| **3, 7, 11** | **Neuro-Optimizer Core** ⭐ | 多步遞迴推理、記憶聯想與 **跨 Chunk 交叉檢索** |
+| **0, 4, 8** | **Resonance Attention** | 高精度局部語義檢索、共振門控與 **外部快取融合** |
+| **1, 2, 5, 6, 9, 10** | **D2V20 SSM Block** | 當前 Chunk 內的背景記憶與時間序列平行掃描 |
+| **3, 7, 11** | **Neuro-Optimizer Core** ⭐ | 多步遞迴推理、海馬迴聯想與 **純潛在空間對齊** |
 
 ---
 
@@ -114,40 +79,37 @@ V24 的核心思想：
 * **Attention Heads**
 8 heads
 * **Micro-Chunking & Cache**
-`chunk_size: 64`, `cache_capacity: 512` Super Tokens
+`chunk_size: 64~384 (Adaptive)`, `cache_capacity: 512` Super Tokens
 * **Thinking Steps**
-3 recursive optimization steps
-* **Optimizer**
-AdamW + BFloat16 Autocast
+3 to 6 recursive latent optimization steps (可依硬體彈性配置)
 * **Loss Design**
 * Multi-Step Cross Entropy
+* **Latent Alignment Loss (MSE with dynamic weighting)** 🚀 *[V24.5 New]*
 * Diff Regularization
 * Halt BCE Supervision
 
 
-* **Inference Exit Threshold**
-`0.85`
+* **Optimizer & Stability**
+AdamW + BFloat16 Autocast + **Auto-LR Scaling via Max Diff** 🚀 *[V24.5 New]*
 
 ---
 
 # 📊 Design Philosophy | 設計哲學
 
-V24 的核心哲學是：
+V24.5 的核心哲學是：
 
-> **「無限的上下文不需要無限的視窗長度，而是需要具備時間感知的動態記憶濃縮。」**
+> **「無限的上下文不需要無限的視窗長度；深度的思考不需要昂貴的全域算圖展開。」**
 
 傳統 Transformer：
 
 * 每次計算成本隨序列長度平方暴增 ($O(N^2)$)
-* 歷史記憶無法動態篩選與壓縮
+* 多步推理（如 CoT）需要消耗大量實體 Token 長度
 
-而 V24：
+而 V24.5：
 
-* 透過 Micro-Chunking 將計算複雜度降為 $O(C \times N)$
-* 根據思考深度 (Halt Probability) 自主篩選重要記憶形成 Super Tokens
-* 利用帶有 RoPE 的 Causal Cache 讓潛空間優化器看見無限的過去
-
-使小模型也能在極低 VRAM 消耗下展現超長文本的推理與記憶能力。
+* 透過 Micro-Chunking 將記憶複雜度降為線性 ($O(C \times N)$)
+* 透過 **Latent Optimizer** 將推理過程隱含於潛在空間中，並透過 **Latent Alignment** 確保思考的一致性。
+* 只有最終結果才會投射回輸出層，使小模型也能在極低硬體負載下，展現超越其參數規模的邏輯推演與跨時空聯想力。
 
 ---
 
@@ -157,9 +119,10 @@ V24 的核心哲學是：
 * [x] V21 QK-Norm Stabilization
 * [x] V22 Latent Optimizer
 * [x] V23 Brain-Inspired Hippocampus
-* [x] **V24 Phase 3: Causal Keyframe Cache & Micro-Chunking**
-* [x] FlashAttention-2 Dynamic Fusion
-* [x] Adaptive Halting System
+* [x] V24 Causal Keyframe Cache & Micro-Chunking
+* [x] **V24.5 Samba-Style Hybrid Layer Reshaping**
+* [x] **V24.5 Pure Latent Projection & Alignment Loss**
+* [x] **V24.5 Dynamic Diff-based LR Defense System**
 * [ ] Phase 4: Persistent Cross-Sample Memory
 * [ ] Phase 5: Multimodal Resonance Workspace
 
@@ -175,9 +138,9 @@ MIT License
 
 如果您對：
 
-* 潛空間遞迴推理
+* 潛空間遞迴推理 (Latent Recursive Reasoning)
 * 動態記憶濃縮 (Super Tokens)
-* 無限長度分塊遞推 (Chunk-wise Recurrence)
+* 防禦型訓練優化 (Dynamic LR Defense)
 * 仿生海馬迴記憶
 
 感興趣，歡迎給專案一個 ⭐！
