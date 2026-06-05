@@ -29,10 +29,10 @@ config = {
     "cache_capacity": 512,     
     "accum_steps": 8,          # 等效 Batch Size = 32
     "think_steps": 5,
-    "lr": 3e-4,              
-    "min_lr": 3e-5,          
-    "warmup_steps": 500,     
-    "max_steps": 20000,      
+    "lr": 2.5e-5,             # 🩹 修正：鎖定超低學習率進行骨骼校正
+    "min_lr": 2.5e-5,         # 🩹 修正：同步至相同數值，不再衰減
+    "warmup_steps": 0,        # 🩹 直接進入低 LR 模式，避免 warmup 攪動
+    "max_steps": 100000,      
     "epochs": 100000,        
     "bin_data": "corpus_v20_twllm.bin", 
     "save_model": "d2_v24_samba_latent.pth", 
@@ -41,7 +41,8 @@ config = {
     "vocab_size": 16384,
     "halt_tau": 0.05,                  
     "inference_exit_threshold": 0.85,
-    "lr_scale": 1.0   
+    "lr_scale": 1.0,          # 🩹 關閉動態調整，保持學習率恆定
+    "align_loss_weight": 0.5  # 🩹 新增：對齊損失權重，暴力矯正潛在空間脫臼
 }
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -625,7 +626,7 @@ def get_lr(it):
     return config["min_lr"] + coeff * (config["lr"] - config["min_lr"])
 
 # ==========================================
-# 7. V24 訓練迴圈 (🚀 改為潛在對齊目標)
+# 7. V24 訓練迴圈 (🩹 終極大腦骨骼校正版)
 # ==========================================
 model = D2V24HybridModel(vocab_size, config["d_model"], config["n_layers"]).to(device)
 optimizer = torch.optim.AdamW(model.parameters(), lr=config["lr"], weight_decay=0.01)
@@ -644,12 +645,13 @@ if os.path.exists(config["save_model"]):
 else:
     print("🆕 未找到既有檢查點，從頭開始訓練。")
 
-pbar = tqdm(initial=global_step, total=config["epochs"], desc="訓練中")
-
+pbar = tqdm(initial=global_step, total=config["epochs"], desc="骨骼校正中")
 diff_str, halt_str = "N/A", "N/A"
 
+# 🚀 唯一的、純淨的校正迴圈
 while global_step < config["epochs"]:
-    lr = get_lr(global_step) * config["lr_scale"]
+    # 🩹 校正 1：鎖死超低學習率 2.5e-5，關閉所有動態衰減與縮放
+    lr = config["lr"]  
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
 
@@ -663,18 +665,17 @@ while global_step < config["epochs"]:
         model.cache.clear() 
         
         with autocast('cuda', dtype=torch.bfloat16):
-            # 🚀 升級：取回的是純粹的潛在向量 (step_latents) 而非 logits
+            # 取回純粹的潛在向量進行共振對齊
             final_logits, step_latents, diffs, halts = model(xb, return_all_steps=True)
             target = yb.view(-1)
             
-            # 1. 核心語言模型損失
+            # (1) 核心語言模型損失
             final_ce = F.cross_entropy(final_logits.view(-1, vocab_size), target)
             total_loss = final_ce
             
             actual_steps = len(step_latents)
             
-            # 2. 🚀 新增：潛在對齊損失 (Latent Alignment Loss)
-            # 強迫前 N-1 步的潛在空間逐漸對齊最終步驟的潛在表達，而非重新計算單詞機率
+            # (2) 🩹 校正 2：高權重潛在對齊損失，強制將發散的隱向量焊回軌道
             latent_align_loss = 0
             if actual_steps > 1:
                 final_latent = step_latents[-1].detach() 
@@ -682,19 +683,19 @@ while global_step < config["epochs"]:
                     weight = (i + 1) / (actual_steps - 1)
                     latent_align_loss += F.mse_loss(step_latents[i], final_latent) * weight
                 
-                # ✅ 新增：Alignment Loss 的權重隨訓練步數逐漸增加，避免初期破壞穩定性
-                align_weight = 0.2 * min(1.0, global_step / 2000)
+                align_weight = config.get("align_loss_weight", 0.5)
                 total_loss += latent_align_loss * align_weight
             
-            # 3. Halt 與 Diff 正則
+            # (3) Halt 與 Diff 正則
             diff_loss = 0
             halt_loss = 0
             for i in range(actual_steps):
-                diff_loss += (diffs[i] ** 2).mean() * 0.001
+                diff_loss += (diffs[i] ** 2).mean() * 0.005
                 target_prob = torch.ones_like(halts[i]) if i == actual_steps - 1 else torch.zeros_like(halts[i])
-                halt_loss += F.binary_cross_entropy_with_logits(halts[i], target_prob)
-            
-            total_loss += diff_loss + (halt_loss * 0.05)
+                step_weight = 0.1 if i == actual_steps - 1 else 0.02
+                halt_loss += F.binary_cross_entropy_with_logits(halts[i], target_prob) * step_weight
+
+            total_loss += diff_loss + halt_loss 
             
             loss_to_back = total_loss / config["accum_steps"]
             loss_to_back.backward()
@@ -703,27 +704,9 @@ while global_step < config["epochs"]:
             step_align_loss_total += latent_align_loss.item() if isinstance(latent_align_loss, torch.Tensor) else 0
             step_halt_loss_total += halt_loss.item()
 
-    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)
-
-    # 🚀 極限放寬版：完全解放 1.6x ~ 2.0x 的正常思考擺幅
-    diffs_avg = [b.avg_diff.item() for b in model.blocks if isinstance(b, ResonanceOptimizerCore)]
-    if diffs_avg:
-        max_diff = max(diffs_avg)
-        if max_diff > 3.0:     # 💡 絕對防線：快撞到 4.0 天花板了，直接砍半
-            config["lr_scale"] *= 0.5
-            print(f"🚨 Diff {max_diff:.2f} > 3.0，lr_scale 降至 {config['lr_scale']:.4f}")
-        elif max_diff > 2.5:   # 💡 預警防線：進入激進區，小幅度微調
-            config["lr_scale"] *= 0.8
-            print(f"⚠️ Diff {max_diff:.2f} > 2.5，lr_scale 降至 {config['lr_scale']:.4f}")
-        elif max_diff < 1.8 and config["lr_scale"] < 1.0:  # 💡 只要低於 1.8，就允許學習率回彈恢復
-            config["lr_scale"] = min(1.0, config["lr_scale"] * 1.05)
-
-        # 🚀 保底進度：無論如何，不允許學習率跌破 20%，確保長跑這兩天一定有進度
-        config["lr_scale"] = max(config["lr_scale"], 0.20)
-
-        for param_group in optimizer.param_groups:
-            param_group['lr'] = lr * config["lr_scale"]
-
+    # 🩹 校正 3：梯度裁剪大幅收緊至 0.2，物理超度核心 3 的發散暴走
+    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.2)
+    
     optimizer.step()
     
     avg_ce = step_final_ce / config["accum_steps"]
@@ -738,18 +721,18 @@ while global_step < config["epochs"]:
     global_step += 1
     pbar.update(1)
 
-    # 每 100 步覆蓋保存最新的檢查點（中斷後可無損接續）
+    # 每 100 步覆蓋保存最新的檢查點
     if global_step % 100 == 0:
         ckpt = {
             'step': global_step,
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
             'smoothed_ce': smoothed_ce,
-            'lr_scale': config["lr_scale"]  # 保存
+            'lr_scale': config["lr_scale"]
         }
         torch.save(ckpt, config["save_model"])
 
-
+    # 每 10 步解析核心狀態並打印
     if global_step % 10 == 0:
         diffs_log = [b.avg_diff.item() for b in model.blocks if isinstance(b, ResonanceOptimizerCore)]
         halts_log = [b.avg_halt_prob.item() for b in model.blocks if isinstance(b, ResonanceOptimizerCore)]
@@ -763,23 +746,13 @@ while global_step < config["epochs"]:
         "P": halt_str      
     })
 
-
-
-
-
+    # 紀錄至 CSV
     if global_step % 10 == 0:
         with open(config["log_csv"], mode='a', newline='') as f:
             writer = csv.writer(f)
             writer.writerow([global_step, f"{avg_ce:.4f}", f"{avg_align:.4f}", f"{avg_halt:.4f}", f"{lr:.6f}", diff_str, halt_str])
 
+    # 每 1,000 步生成獨立的永久備份
     if global_step % 1000 == 0:
-        ckpt = {
-            'step': global_step, 
-            'model_state_dict': model.state_dict(), 
-            'optimizer_state_dict': optimizer.state_dict(),
-            'smoothed_ce': smoothed_ce  
-        }
-        torch.save(ckpt, config["save_model"])
         backup_path = config["save_model"].replace(".pth", f"_step_{global_step}.pth")
         shutil.copy2(config["save_model"], backup_path)
-

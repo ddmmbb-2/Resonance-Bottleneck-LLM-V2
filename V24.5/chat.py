@@ -483,7 +483,14 @@ def main():
         if not user_input.strip():
             continue
         print("🤖 模型思考中...")
-        response = generator.generate(user_input, max_new_tokens=150, temperature=0.7, top_k=50, top_p=0.9)
+        # 🚀 修改為這個嚴謹盲測版：
+        response = generator.generate(
+            user_input, 
+            max_new_tokens=150, 
+            temperature=0.2,  # 🔴 從 0.7 降到 0.2！大腦極度降溫，讓模型只敢挑機率最高的正統字
+            top_k=5,          # 🔴 從 50 縮減到 5！候選字縮到最小，直接封殺那些奇奇怪怪的邊緣垃圾 Token
+            top_p=0.85
+        )
         print(f"🤖 助手: {response}")
 
 if __name__ == "__main__":

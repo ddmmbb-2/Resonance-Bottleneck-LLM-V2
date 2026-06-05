@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-V24 訓練監控腳本（常駐版）
+V24 訓練監控腳本（常駐版，只讀取最新 N 筆）
 用法：python monitor.py --csv v24_samba_latent_log.csv [--recent 100]
 啟動後每 60 秒自動更新一次，按 Ctrl+C 結束。
 """
@@ -11,7 +11,31 @@ import argparse
 import numpy as np
 import time
 import os
+from io import StringIO
 from datetime import datetime
+
+def tail(file_path, n):
+    """讀取檔案最後 n 行（效率高，不掃描整個檔案），回傳字串"""
+    with open(file_path, 'rb') as f:
+        f.seek(0, 2)          # 移到檔案結尾
+        file_size = f.tell()
+        block_size = 1024
+        data = b''
+        lines_found = 0
+        # 從尾端往前讀，直到收集到至少 n+1 個換行（確保 n 行）
+        while file_size > 0 and lines_found <= n:
+            read_size = min(block_size, file_size)
+            file_size -= read_size
+            f.seek(file_size)
+            block = f.read(read_size)
+            data = block + data
+            lines_found = data.count(b'\n')
+        # 分割並取最後 n 行（去除檔案結尾可能的空行）
+        lines = data.split(b'\n')
+        if lines and lines[-1] == b'':
+            lines = lines[:-1]
+        lines = lines[-n:]
+        return b'\n'.join(lines).decode('utf-8', errors='replace')
 
 def parse_list_str(s):
     """解析 Diffs 或 Halts 的字符串列表，如 '[0.21,0.24,0.26]'"""
@@ -21,47 +45,58 @@ def parse_list_str(s):
         return []
 
 def analyze(csv_path, recent=100):
-    """讀取 CSV 並輸出診斷報告，回傳是否有足夠數據的旗標（僅用於內部判斷）"""
+    """只載入最後 recent 筆資料進行診斷"""
     if not os.path.exists(csv_path):
         print(f"⏳ 等待 CSV 檔案產生：{csv_path}")
         return False
 
-    rows = []
+    # ---------- 高效讀取：只拿 header + 最後 recent 行 ----------
     try:
+        # 1. 讀取第一行（欄位名稱）
         with open(csv_path, 'r', encoding='utf-8') as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                if not row.get('Step'):
-                    continue
-                row['Step'] = int(row['Step'])
-                row['Final_CE'] = float(row['Final_CE'])
-                row['Align_Loss'] = float(row['Align_Loss'])
-                row['Halt_Loss'] = float(row['Halt_Loss'])
-                row['LR'] = float(row['LR'])
-                row['Diffs'] = parse_list_str(row['Diffs'])
-                row['Halts'] = parse_list_str(row['Halts'])
-                rows.append(row)
+            header_line = f.readline().strip()
+            header = next(csv.reader([header_line]))
+
+        # 2. 讀取最後 recent 行資料
+        recent_data_str = tail(csv_path, recent)
+        if not recent_data_str:
+            print("⏳ 目前尚無訓練紀錄，等待中...")
+            return False
+
+        # 3. 組合成完整 CSV 文字，用 StringIO 解析
+        csv_text = header_line + '\n' + recent_data_str
+        reader = csv.DictReader(StringIO(csv_text))
+        rows = []
+        for row in reader:
+            if not row.get('Step'):
+                continue
+            row['Step'] = int(row['Step'])
+            row['Final_CE'] = float(row['Final_CE'])
+            row['Align_Loss'] = float(row['Align_Loss'])
+            row['Halt_Loss'] = float(row['Halt_Loss'])
+            row['LR'] = float(row['LR'])
+            row['Diffs'] = parse_list_str(row['Diffs'])
+            row['Halts'] = parse_list_str(row['Halts'])
+            rows.append(row)
     except Exception as e:
-        print(f"❌ 讀取 CSV 出錯：{e}")
+        print(f"❌ 讀取或解析 CSV 出錯：{e}")
         return False
 
-    total_steps = len(rows)
-    if total_steps == 0:
+    total_loaded = len(rows)
+    if total_loaded == 0:
         print("⏳ 目前尚無訓練紀錄，等待中...")
         return False
 
-    # 決定分析的步數範圍（取最近 recent 步，若總步數不足則用全部）
-    analyze_steps = min(recent, total_steps)
-    recent_rows = rows[-analyze_steps:]
+    # 分析對象即為這些 rows（已經是最近 recent 筆）
+    recent_rows = rows
+    analyze_steps = len(recent_rows)
     steps = [r['Step'] for r in recent_rows]
     current_step = steps[-1]
 
     print(f"\n{'='*60}")
     print(f"📊 V24 訓練監控報告")
     print(f"   更新時間：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"   總步數：{total_steps}，本次分析最近 {analyze_steps} 步 (Step {steps[0]} ~ {steps[-1]})")
-    if analyze_steps < recent:
-        print(f"   ℹ️ 目前資料不足 {recent} 步，暫時使用所有可用數據進行評估。")
+    print(f"   本次分析最近 {analyze_steps} 筆紀錄 (Step {steps[0]} ~ {steps[-1]})")
 
     # 基本統計
     ces = [r['Final_CE'] for r in recent_rows]
@@ -69,7 +104,7 @@ def analyze(csv_path, recent=100):
     halts_loss = [r['Halt_Loss'] for r in recent_rows]
     lr = recent_rows[-1]['LR']
 
-    # 每個推理核心的 Diffs 與 Halts（假設都有 3 個核心，若無則跳過）
+    # 每個推理核心的 Diffs 與 Halts（假設最多 3 個核心）
     core_diffs = [[] for _ in range(3)]
     core_halts = [[] for _ in range(3)]
     for r in recent_rows:
@@ -98,7 +133,6 @@ def analyze(csv_path, recent=100):
         avg_ce_recent = avg_ce_older = avg_ce
         ce_improvement = 0.0
 
-    # 輸出基本數值
     print(f"   當前學習率：{lr:.2e}")
     print(f"   CE 平均/最佳/最差：{avg_ce:.4f} / {min_ce:.4f} / {max_ce:.4f}")
     if half >= 1:
@@ -108,12 +142,11 @@ def analyze(csv_path, recent=100):
     print(f"   Halt 機率（核心1/2/3）：{avg_halts_first:.3f} / {avg_halts_mid:.3f} / {avg_halts_last:.3f}")
     print(f"   平均 Diff（核心1/2/3）：{avg_diffs[0]:.3f} / {avg_diffs[1]:.3f} / {avg_diffs[2]:.3f}")
 
-    # 診斷與建議
+    # 診斷與建議（沿用原有邏輯，只根據 analyze_steps 調整）
     warnings = []
     suggestions = []
 
     # ---------- Align 檢查 ----------
-    # 訓練初期（<500步）放寬標準
     if current_step < 500:
         if avg_align > 0.5:
             warnings.append("⚡ 對齊損失偏高（>0.5），潛在步驟差異過大，可能造成不穩定。")
@@ -162,7 +195,6 @@ def analyze(csv_path, recent=100):
     if lr < 5e-5 and current_step > 10000:
         suggestions.append("→ 學習率已很低，若 CE 不再下降，可提前停止訓練。")
 
-    # 輸出警告與建議
     if warnings:
         print("\n🔍 警告：")
         for w in warnings:
@@ -178,16 +210,16 @@ def analyze(csv_path, recent=100):
         print("💡 目前無需調整。")
 
     print(f"{'='*60}\n")
-    return True  # 分析完成
+    return True
 
 def main():
-    parser = argparse.ArgumentParser(description="V24 訓練監控工具（常駐模式）")
+    parser = argparse.ArgumentParser(description="V24 訓練監控工具（常駐模式，高效讀取最新 N 筆）")
     parser.add_argument("--csv", type=str, default="v24_samba_latent_log.csv", help="CSV 日誌路徑")
-    parser.add_argument("--recent", type=int, default=100, help="分析的最近步數（預設 100）")
+    parser.add_argument("--recent", type=int, default=100, help="分析的最近筆數（預設 100）")
     parser.add_argument("--interval", type=int, default=60, help="更新間隔（秒，預設 60）")
     args = parser.parse_args()
 
-    print(f"🚀 V24 監控啟動，每 {args.interval} 秒刷新一次，按 Ctrl+C 終止。")
+    print(f"🚀 V24 監控啟動，每 {args.interval} 秒刷新一次，只讀取最新 {args.recent} 筆，按 Ctrl+C 終止。")
     try:
         while True:
             analyze(args.csv, args.recent)
